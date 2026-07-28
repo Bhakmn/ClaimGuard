@@ -12,7 +12,7 @@
  */
 
 import type { FastifyPluginAsync } from "fastify";
-import { getDb, probeDatabase } from "../db/client.js";
+import { probeDatabase } from "../db/client.js";
 import { getConfig } from "../config/env.js";
 import { nowIso } from "../lib/time.js";
 import { HEALTH_DB_TIMEOUT_MS, HEALTH_EL_DEGRADED_MS } from "../config/constants.js";
@@ -74,16 +74,18 @@ const healthRoutes: FastifyPluginAsync = async (fastify) => {
       const cfg = getConfig();
 
       // ── Database check ────────────────────────────────────────────────────
-      let dbStatus: "ok" | "failed" = "ok";
+      let dbStatus: "ok" | "failed" | "unconfigured" = cfg.dbEnabled ? "ok" : "unconfigured";
       let dbLatencyMs = 0;
       let dbReason: string | undefined;
 
-      try {
-        dbLatencyMs = await probeDatabase(HEALTH_DB_TIMEOUT_MS);
-      } catch (err) {
-        dbStatus = "failed";
-        dbReason = err instanceof Error ? err.message : "unknown";
-        dbLatencyMs = HEALTH_DB_TIMEOUT_MS;
+      if (cfg.dbEnabled) {
+        try {
+          dbLatencyMs = await probeDatabase(HEALTH_DB_TIMEOUT_MS);
+        } catch (err) {
+          dbStatus = "failed";
+          dbReason = err instanceof Error ? err.message : "unknown";
+          dbLatencyMs = HEALTH_DB_TIMEOUT_MS;
+        }
       }
 
       // ── Event-loop delay (approximate via timer drift) ────────────────────
@@ -93,6 +95,7 @@ const healthRoutes: FastifyPluginAsync = async (fastify) => {
       const { heapUsed: heapUsedBytes } = process.memoryUsage();
 
       // ── Overall status ────────────────────────────────────────────────────
+      // DB "unconfigured" is not a failure — the server runs intentionally without it.
       const degraded =
         dbStatus === "failed" || elDelay >= HEALTH_EL_DEGRADED_MS;
 
@@ -108,6 +111,8 @@ const healthRoutes: FastifyPluginAsync = async (fastify) => {
           database:
             dbStatus === "ok"
               ? { status: "ok", latencyMs: dbLatencyMs }
+              : dbStatus === "unconfigured"
+              ? { status: "unconfigured" }
               : { status: "failed", latencyMs: dbLatencyMs, reason: dbReason },
           eventLoopDelayMs: elDelay,
           heapUsedBytes,

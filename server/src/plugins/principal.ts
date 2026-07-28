@@ -133,8 +133,12 @@ async function resolvePrincipal(request: FastifyRequest): Promise<Principal> {
     return anonymousPrincipal(clientIp);
   }
 
-  const db = getDb();
   const cfg = getConfig();
+
+  // No database — treat any cookie as anonymous (sessions require DB).
+  if (!cfg.dbEnabled) return anonymousPrincipal(clientIp);
+
+  const db = getDb();
 
   const now = new Date();
   const idleCutoff = new Date(now.getTime() - cfg.SESSION_IDLE_TTL_SECONDS * 1_000);

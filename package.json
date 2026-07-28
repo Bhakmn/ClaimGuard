@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:server": "npm run dev --prefix server",
-    "dev:all": "concurrently --names \"next,server\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run dev:server\"",
+    "dev:all": "concurrently --names \"next,server\" --prefix-colors \"cyan,yellow\" --kill-others-on-fail \"npm run dev\" \"npm run dev:server\"",
     "build": "next build",
     "start": "next start"
   },
@@ -13,6 +13,7 @@
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "next": "16.2.0",
+    "ngrok": "^5.0.0-beta.2",
     "react": "19.2.0",
     "react-dom": "19.2.0"
   },

@@ -27,7 +27,7 @@ const intEnv = (min: number, max: number) =>
 
 const absoluteUrl = z
   .string()
-  .url()
+  .regex(/^https?:\/\/.+/, { message: "Must be an http or https URL" })
   .refine((v) => !v.endsWith("/"), {
     message: "Must not have a trailing slash",
   });
@@ -36,11 +36,11 @@ const absoluteUrl = z
 const optionalUrl = z
   .string()
   .optional()
-  .transform((v) => (v && v.trim().length > 0 ? v.replace(/\/+$/, "") : undefined))
+  .transform((v) => (v && v.trim().length > 0 ? v.trim().replace(/\/+$/, "") : undefined))
   .pipe(
     z
       .string()
-      .url()
+      .regex(/^https?:\/\/.+/, { message: "Must be an http or https URL" })
       .refine((v) => !v.endsWith("/"), { message: "Must not have a trailing slash" })
       .optional()
   );

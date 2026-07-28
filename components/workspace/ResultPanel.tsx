@@ -271,7 +271,7 @@ function SharePanel({
           aria-label={share.ytBusy ? "Uploading to YouTube…" : "Share to YouTube"}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-youtube.svg" width={16} height={16} alt="" />
+          <img src="/Youtube_logo.png" width={16} height={16} alt="" />
           {share.ytBusy ? "Uploading to YouTube…" : "Share to YouTube"}
         </button>
 
@@ -284,7 +284,7 @@ function SharePanel({
           aria-label={ttLabel}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-tiktok.svg" width={16} height={16} alt="" />
+          <img src="/tiktok_logo.png" width={16} height={16} alt="" />
           {ttLabel}
         </button>
 
@@ -296,7 +296,7 @@ function SharePanel({
           aria-label="Share to Instagram"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo-instagram.svg" width={16} height={16} alt="" />
+          <img src="/insta_logo.jpg" width={16} height={16} alt="" />
           Share to Instagram
         </button>
 

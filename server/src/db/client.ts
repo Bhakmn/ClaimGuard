@@ -53,16 +53,7 @@ export async function probeDatabase(timeoutMs: number): Promise<number> {
     )
   );
 
-  const probe = getDb().rpc("pg_sleep", { seconds: 0 });
-
-  // We don't actually use pg_sleep — we run a raw SELECT 1 via the REST API.
-  // Supabase JS doesn't expose a raw SQL interface, so we use a known-cheap RPC.
-  // Alternatively: query any lightweight table.  We use the Supabase
-  // health-check pattern: call .from("_health").select() — if that doesn't
-  // exist, fall back to checking the client itself is configured.
-  //
-  // The actual probe uses a dummy select on the sessions table (always present
-  // after migrations) with limit 0 — zero rows transferred, just a round-trip.
+  // Lightweight round-trip: HEAD on the sessions table — zero rows transferred.
   const selectProbe = getDb()
     .from("sessions")
     .select("id", { count: "exact", head: true });

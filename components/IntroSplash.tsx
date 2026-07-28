@@ -159,7 +159,7 @@ export function IntroSplash({ onDone }: IntroSplashProps) {
                 }),
           }}
         >
-          AI Copyright Cleaner
+          Copyright Cleaner
         </p>
       </div>
 

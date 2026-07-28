@@ -7,6 +7,7 @@ import React, {
   useEffect,
 } from "react";
 
+import Link from "next/link";
 import { ServicesProvider, useServices } from "@/lib/services/provider";
 import { ToastStack } from "@/components/primitives/Toast";
 import { IntroSplash, introHasPlayed } from "@/components/IntroSplash";
@@ -425,6 +426,15 @@ function WorkspaceInner() {
     ]
   );
 
+  /* ─── Go home (logo click) ───────────────────────────────────────────── */
+  const handleGoHome = useCallback(() => {
+    if (state.scanning || state.exporting) return;
+    closeItemBitmaps(state.items);
+    for (const item of state.items) URL.revokeObjectURL(item.url);
+    if (state.exportResult) URL.revokeObjectURL(state.exportResult.url);
+    setStateRaw(INITIAL_STATE);
+  }, [state.scanning, state.exporting, state.items, state.exportResult]);
+
   /* ─── Next / Choose another ──────────────────────────────────────────── */
   const handleNextOrChoose = useCallback(() => {
     if (state.scanning || state.exporting) return;
@@ -689,10 +699,25 @@ function WorkspaceInner() {
           {/* Header */}
           <header className="workspace-header">
             <h1 id="workspace-heading" className="workspace-h1">
-              <span style={{ color: "#1F1F1F" }}>Claim</span>
-              <span style={{ color: "#C65D3B", fontStyle: "italic" }}>
-                Guard
-              </span>
+              <button
+                onClick={handleGoHome}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  font: "inherit",
+                  color: "inherit",
+                  lineHeight: "inherit",
+                  letterSpacing: "inherit",
+                }}
+                aria-label="Go to home page"
+              >
+                <span style={{ color: "#1F1F1F" }}>Claim</span>
+                <span style={{ color: "#C65D3B", fontStyle: "italic" }}>
+                  Guard
+                </span>
+              </button>
             </h1>
           </header>
 
@@ -721,7 +746,7 @@ function WorkspaceInner() {
           <input
             ref={importInputRef}
             type="file"
-            accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mkv,.avi,.mp3,.wav,.m4a,.aac,.ogg,.flac"
+            accept="video/*,audio/*,.mp4,.mov,.m4v,.webm,.mkv,.mp3,.wav,.m4a,.aac,.ogg,.flac"
             style={{ display: "none" }}
             onChange={(e) => {
               const file = e.target.files?.[0];

@@ -27,7 +27,7 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "ClaimGuard · AI Copyright Cleaner",
+  title: "ClaimGuard · Copyright Cleaner",
   description:
     "Flag copyrighted music in short videos, then cut, mute or replace it in a browser timeline editor.",
 };

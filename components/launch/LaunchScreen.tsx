@@ -34,7 +34,7 @@ const HOW_ITEMS = [
     glyphColor: "white",
     glyph: "◉",
     title: "Scan",
-    body: "AI flags copyrighted music on the timeline.",
+    body: "Audio fingerprinting flags copyrighted music on the timeline.",
     delay: "0.6s",
   },
   {
