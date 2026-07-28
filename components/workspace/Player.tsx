@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useCallback, useState } from "react";
-import type { MediaItem } from "@/lib/types";
+import type { MediaItem, FlaggedSpan, FlaggedVisualSpan } from "@/lib/types";
 import type { ElementPool } from "@/hooks/usePlaybackEngine";
 
 interface PlayerProps {
@@ -11,6 +11,14 @@ interface PlayerProps {
   onTogglePlay: () => void;
   /** Map populated by WorkspacePanel for imperative display toggling from onTick. */
   videoElsRef?: React.RefObject<Map<string, HTMLVideoElement>>;
+  /** Current playhead position in seconds — used to drive the flag overlay. */
+  playhead?: number;
+  /** Audio flagged spans — drives red overlay when playhead is inside one. */
+  spans?: FlaggedSpan[];
+  /** Visual flagged spans — drives purple overlay when playhead is inside one. */
+  visualSpans?: FlaggedVisualSpan[];
+  /** ID of the primary (first) media item — used to filter spans. */
+  primaryMediaId?: string;
 }
 
 /* ── Human-readable MediaError codes ──────────────────────────────────────── */
@@ -30,12 +38,37 @@ function mediaErrorMessage(err: MediaError | null): string {
   }
 }
 
+/* ── Flag overlay helper ───────────────────────────────────────────────────── */
+
+/**
+ * Returns the active flag (if any) at the given playhead time.
+ * Visual flags take precedence in the label, but both can be active simultaneously.
+ */
+function getActiveFlags(
+  t: number,
+  spans: FlaggedSpan[],
+  visualSpans: FlaggedVisualSpan[],
+  mediaId: string | null
+): { audioFlag: FlaggedSpan | null; visualFlag: FlaggedVisualSpan | null } {
+  const audioFlag = spans.find(
+    (s) => s.enabled && s.mediaId === mediaId && t >= s.start && t < s.end
+  ) ?? null;
+  const visualFlag = visualSpans.find(
+    (s) => s.enabled && s.mediaId === mediaId && t >= s.start && t < s.end
+  ) ?? null;
+  return { audioFlag, visualFlag };
+}
+
 export function Player({
   items,
   activeVideoMediaId,
   pool,
   onTogglePlay,
   videoElsRef,
+  playhead = 0,
+  spans = [],
+  visualSpans = [],
+  primaryMediaId,
 }: PlayerProps) {
   const showGap = activeVideoMediaId === null;
   // Track which item ids we've already wired up (diagnostic + pool + videoElsRef).
@@ -117,6 +150,12 @@ export function Player({
     [pool]
   );
 
+  /* ── Active flags at current playhead ───────────────────────────────────── */
+  const { audioFlag, visualFlag } = getActiveFlags(
+    playhead, spans, visualSpans, primaryMediaId ?? activeVideoMediaId
+  );
+  const flagActive = audioFlag !== null || visualFlag !== null;
+
   return (
     <div className="player-wrapper-outer">
       {/* Error banners — one per affected item */}
@@ -143,6 +182,12 @@ export function Player({
         aria-label="Play or pause the preview"
         title="Click to play / pause (Space)"
         type="button"
+        style={flagActive ? {
+          outline: audioFlag
+            ? "3px solid rgba(198,93,59,0.85)"
+            : "3px solid rgba(124,92,216,0.85)",
+          outlineOffset: "-3px",
+        } : undefined}
       >
         {/* Element pool — all elements always mounted, visibility controlled */}
         {items.map((item) => (
@@ -205,6 +250,55 @@ export function Player({
         {showGap && (
           <div className="player-gap">
             🚫 no video here (black in the export)
+          </div>
+        )}
+
+        {/* ── Flag overlay — shown when playhead is inside a flagged span ── */}
+        {flagActive && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              pointerEvents: "none",
+              borderRadius: "inherit",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "flex-end",
+              padding: "0 0 8px 0",
+            }}
+            aria-hidden="true"
+          >
+            {/* Coloured tint */}
+            <div style={{
+              position: "absolute",
+              inset: 0,
+              background: audioFlag
+                ? "rgba(198,93,59,0.18)"
+                : "rgba(124,92,216,0.18)",
+              borderRadius: "inherit",
+            }} />
+
+            {/* Label pill */}
+            <div style={{
+              position: "relative",
+              alignSelf: "center",
+              background: audioFlag ? "rgba(198,93,59,0.92)" : "rgba(124,92,216,0.92)",
+              color: "#fff",
+              fontSize: 11.5,
+              fontWeight: 700,
+              letterSpacing: "0.03em",
+              padding: "4px 10px",
+              borderRadius: 20,
+              maxWidth: "calc(100% - 24px)",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}>
+              {audioFlag
+                ? `⚠ ${audioFlag.title || "Copyrighted music"}${audioFlag.artists ? ` · ${audioFlag.artists}` : ""}`
+                : `◈ ${visualFlag!.label}`
+              }
+            </div>
           </div>
         )}
       </button>

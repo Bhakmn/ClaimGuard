@@ -223,6 +223,10 @@ export function WorkspacePanel({
         pool={pool}
         onTogglePlay={handleTogglePlay}
         videoElsRef={videoElsRef}
+        playhead={state.playhead}
+        spans={state.spans}
+        visualSpans={state.visualSpans}
+        primaryMediaId={state.items[0]?.id}
       />
 
       {/* Timeline */}
