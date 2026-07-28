@@ -183,12 +183,53 @@ function WorkspaceInner() {
     [services.scan]
   );
 
+  /* ─── Visual scan orchestration ──────────────────────────────────────── */
+  const runVisualScan = useCallback(
+    async (itemsOverride?: MediaItem[]) => {
+      const items = itemsOverride ?? stateRef.current.items;
+      if (items.length === 0) return;
+
+      setStateRaw((prev) => ({
+        ...prev,
+        visualScanning: true,
+        visualScanProgress: 0,
+        visualScanStatus: "",
+      }));
+
+      try {
+        const found = await services.visualScan.scan(
+          { items },
+          (progress) => {
+            setStateRaw((prev) => ({
+              ...prev,
+              visualScanProgress: Math.round(progress.fraction * 100),
+              visualScanStatus: progress.status,
+              visualSpans: progress.found,
+            }));
+          }
+        );
+
+        setStateRaw((prev) => ({
+          ...prev,
+          visualScanning: false,
+          visualScanned: true,
+          visualSpans: found,
+        }));
+      } catch (err) {
+        // Visual scan failure is non-fatal — log and continue
+        console.error("[visual-scan] failed:", err);
+        setStateRaw((prev) => ({ ...prev, visualScanning: false }));
+      }
+    },
+    [services.visualScan]
+  );
+
   /* ─── Manual scan ────────────────────────────────────────────────────── */
   const handleScan = useCallback(() => {
     if (state.scanning || state.exporting || !primaryItem) return;
     setScanMeta({ startMs: Date.now(), failureMessage: null });
-    runScan("replace");
-  }, [state.scanning, state.exporting, primaryItem, runScan]);
+    runScan("replace").then(() => runVisualScan());
+  }, [state.scanning, state.exporting, primaryItem, runScan, runVisualScan]);
 
   /* ─── Overlay handlers ───────────────────────────────────────────────── */
   const handleOverlayClose = useCallback(() => {
@@ -271,9 +312,9 @@ function WorkspaceInner() {
 
       // Auto-scan immediately — pass item directly so we don't depend on
       // stateRef being updated yet (setStateRaw is async/batched).
-      runScan("replace", [item]);
+      runScan("replace", [item]).then(() => runVisualScan([item]));
     },
-    [services.media, runScan]
+    [services.media, runScan, runVisualScan]
   );
 
   /* ─── Import media ───────────────────────────────────────────────────── */
@@ -603,9 +644,17 @@ function WorkspaceInner() {
     const primary = currentState.items[0] ?? null;
     if (!primary || primary.duration <= 0) return;
 
-    // Compute active removals from enabled spans
+    // Compute active removals from enabled audio spans
     const activeRemovals = mergeRanges(
       currentState.spans
+        .filter((s) => s.enabled)
+        .map((s) => ({ start: s.start, end: s.end })),
+      primary.duration
+    );
+
+    // Compute active removals from enabled visual spans (F-2 fix)
+    const visualRemovals = mergeRanges(
+      currentState.visualSpans
         .filter((s) => s.enabled)
         .map((s) => ({ start: s.start, end: s.end })),
       primary.duration
@@ -619,7 +668,7 @@ function WorkspaceInner() {
       primary.duration
     );
 
-    if (!edited && activeRemovals.length === 0) {
+    if (!edited && activeRemovals.length === 0 && visualRemovals.length === 0) {
       setStateRaw((prev) => ({
         ...prev,
         errorMessage: "Nothing to change. Flag regions or edit the clips first.",
@@ -648,6 +697,7 @@ function WorkspaceInner() {
           videoSegments: currentState.videoSegments,
           audioSegments: currentState.audioSegments,
           removals: activeRemovals,
+          visualRemovals,
           primaryId: primary.id,
         },
         (line) => {
