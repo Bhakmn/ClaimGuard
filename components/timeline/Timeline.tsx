@@ -58,11 +58,20 @@ interface ContextMenuState {
   clickTime?: number;
 }
 
+/** Imperative handle populated by Timeline for the playback engine to call
+ *  on every RAF tick — moves the playhead needle and drives scroll following
+ *  without touching React state. */
+export interface TimelineTickHandle {
+  tick(t: number): void;
+}
+
 interface TimelineProps {
   state: WorkspaceState;
   update: (patch: Partial<WorkspaceState>) => void;
   onSeek: (t: number) => void;
   onOpenImport: () => void;
+  /** Ref populated by Timeline with an imperative tick() handle. */
+  tickRef?: React.RefObject<TimelineTickHandle | null>;
 }
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -71,11 +80,13 @@ function getMediaDuration(items: MediaItem[], mediaId: string): number {
 }
 
 /* ─── Main component ─────────────────────────────────────────────────────── */
-export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps) {
+export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: TimelineProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const filmRef = useRef<HTMLCanvasElement>(null);
   const waveRef = useRef<HTMLCanvasElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  // DOM ref for the playhead needle — moved imperatively on every RAF tick
+  const playheadElRef = useRef<HTMLDivElement>(null);
 
   const [zoom, setZoom] = useState(INITIAL_ZOOM);
   const [scrollLeft, setScrollLeft] = useState(0);
@@ -166,11 +177,43 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
     prevPlayingRef.current = state.playing;
   }, [state.playing]);
 
+  // During playback the needle and scroll are driven imperatively via tickRef
+  // (no React state writes on every frame).  When not playing, or after a seek,
+  // state.playhead still drives a one-shot re-position.
   useEffect(() => {
     if (!scrollerRef.current) return;
     if (userScrolledRef.current) return;
     followPlayhead(state.playhead, state.playing, viewportWidth);
-  }, [state.playhead, state.playing, viewportWidth, followPlayhead]);
+    // Also move the needle synchronously for seeks / pause position.
+    if (playheadElRef.current) {
+      playheadElRef.current.style.left = `${state.playhead * calcPixelsPerSecond(zoom)}px`;
+    }
+  }, [state.playhead, state.playing, viewportWidth, followPlayhead, zoom]);
+
+  /* ── Imperative tick handle (RAF, no setState) ─────────────────────────── */
+  // pps changes only when zoom changes — capture it in a ref so the tick
+  // closure below always uses the current value without being recreated.
+  const ppsRef = useRef(calcPixelsPerSecond(zoom));
+  ppsRef.current = calcPixelsPerSecond(zoom);
+
+  useEffect(() => {
+    if (!tickRef) return;
+    (tickRef as React.MutableRefObject<TimelineTickHandle | null>).current = {
+      tick(t: number) {
+        // Move needle
+        if (playheadElRef.current) {
+          playheadElRef.current.style.left = `${t * ppsRef.current}px`;
+        }
+        // Scroll to follow playhead
+        if (!userScrolledRef.current) {
+          followPlayhead(t, true, viewportWidth);
+        }
+      },
+    };
+    return () => {
+      (tickRef as React.MutableRefObject<TimelineTickHandle | null>).current = null;
+    };
+  });
 
   /* ── Non-passive wheel ─────────────────────────────────────────────────── */
   useEffect(() => {
@@ -207,7 +250,8 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
     videoSegments: state.videoSegments,
     items: state.items,
     pixelsPerSecond: pps,
-    contentWidth,
+    scrollLeft,
+    viewportWidth,
   });
 
   useWaveformCanvas({
@@ -216,7 +260,8 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
     items: state.items,
     primaryId: primaryItem?.id ?? "",
     pixelsPerSecond: pps,
-    contentWidth,
+    scrollLeft,
+    viewportWidth,
   });
 
   /* ── State mutation helpers ─────────────────────────────────────────────── */
@@ -921,10 +966,10 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
               onPointerMove={(e) => { if (scrubbing) { edgeAutoScroll(e.clientX); onSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); } }}
               onPointerUp={() => setScrubbing(false)}
             >
-              {/* Filmstrip canvas — always anchored at left:0; drawing code handles scroll offset */}
+              {/* Filmstrip canvas — positioned at scrollLeft, sized to viewport only */}
               <canvas
                 ref={filmRef}
-                style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+                style={{ position: "absolute", top: 0, left: scrollLeft, pointerEvents: "none" }}
               />
 
               {/* Video clips */}
@@ -1000,10 +1045,10 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
               onPointerUp={() => setScrubbing(false)}
               onPointerLeave={() => setTooltip(null)}
             >
-              {/* Waveform canvas — always anchored at left:0; drawing code handles scroll offset */}
+              {/* Waveform canvas — starts at 20px (3px gap + 17px label row) */}
               <canvas
                 ref={waveRef}
-                style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
+                style={{ position: "absolute", top: 20, left: scrollLeft, pointerEvents: "none", zIndex: 2 }}
               />
 
               {/* Audio clips */}
@@ -1071,91 +1116,92 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
                   </div>
                 );
               })}
-            </div>
+              {/* ── Flag regions — inside audio-track so waveform canvas (z-index 2) ── */}
+              {/* paints above the region fill (z-index 1). Label strip uses             */}
+              {/* bottom:100% to float above the track without touching the waveform.    */}
+              {regionBlocks.map((block, i) => {
+                const { span, left, width, startEdge, endEdge, first } = block;
+                const selected = state.selectedSpanId === span.id;
+                const spared = !span.enabled;
 
-            {/* ── Flag regions ────────────────────────────────────────── */}
-            {regionBlocks.map((block, i) => {
-              const { span, left, width, startEdge, endEdge, first } = block;
-              const selected = state.selectedSpanId === span.id;
-              const spared = !span.enabled;
-
-              return (
-                <div
-                  key={`${span.id}-${i}`}
-                  className={`flag-region${spared ? " flag-region--spared" : ""}${selected ? " flag-region--selected" : ""}`}
-                  style={{ left, width }}
-                >
-                  {/* Label strip */}
+                return (
                   <div
-                    className={`region-label-strip${spared ? " region-label-strip--spared" : ""}`}
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      update({ selectedSpanId: span.id, selectedClip: null });
-                    }}
-                    onPointerEnter={() => {
-                      const rect = scrollerRef.current?.getBoundingClientRect();
-                      const audioTop = rect ? rect.top + RULER_HEIGHT + TRACK_HEIGHT : 0;
-                      setTooltip({
-                        span,
-                        blockLeft: left - scrollLeft,
-                        blockWidth: width,
-                        clientX: left - scrollLeft + width / 2 + (rect?.left ?? 0),
-                        audioTrackTop: audioTop,
-                        pixelsPerSecond: pps,
-                        scrollLeft,
-                      });
-                    }}
-                    onPointerLeave={() => setTooltip(null)}
-                    onContextMenu={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                      openContextMenu(e, "region", { spanId: span.id });
-                    }}
+                    key={`${span.id}-${i}`}
+                    className={`flag-region${spared ? " flag-region--spared" : ""}${selected ? " flag-region--selected" : ""}`}
+                    style={{ left, width }}
                   >
-                    <div className="region-label-text">
-                      {first
-                        ? span.title + (span.artists ? ` · ${span.artists}` : "")
-                        : "⋯"}
+                    {/* Label strip */}
+                    <div
+                      className={`region-label-strip${spared ? " region-label-strip--spared" : ""}`}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        update({ selectedSpanId: span.id, selectedClip: null });
+                      }}
+                      onPointerEnter={() => {
+                        const rect = scrollerRef.current?.getBoundingClientRect();
+                        const audioTop = rect ? rect.top + RULER_HEIGHT + TRACK_HEIGHT : 0;
+                        setTooltip({
+                          span,
+                          blockLeft: left - scrollLeft,
+                          blockWidth: width,
+                          clientX: left - scrollLeft + width / 2 + (rect?.left ?? 0),
+                          audioTrackTop: audioTop,
+                          pixelsPerSecond: pps,
+                          scrollLeft,
+                        });
+                      }}
+                      onPointerLeave={() => setTooltip(null)}
+                      onContextMenu={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        openContextMenu(e, "region", { spanId: span.id });
+                      }}
+                    >
+                      <div className="region-label-text">
+                        {first
+                          ? span.title + (span.artists ? ` · ${span.artists}` : "")
+                          : "⋯"}
+                      </div>
                     </div>
+
+                    {/* Start edge handle */}
+                    {startEdge && span.start - block.segSrcStart > 0.01 && (
+                      <div
+                        className={`region-edge-handle region-edge-handle--left${spared ? " region-edge-handle--spared" : ""}`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          setTooltip(null);
+                          update({ selectedSpanId: span.id });
+                          const snap = takeSnapshot(state);
+                          update(pushUndo(state, snap));
+                          dragRef.current = { mode: "region-start", spanId: span.id };
+                        }}
+                      />
+                    )}
+
+                    {/* End edge handle */}
+                    {endEdge && block.segSrcEnd - span.end > 0.01 && (
+                      <div
+                        className={`region-edge-handle region-edge-handle--right${spared ? " region-edge-handle--spared" : ""}`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          setTooltip(null);
+                          update({ selectedSpanId: span.id });
+                          const snap = takeSnapshot(state);
+                          update(pushUndo(state, snap));
+                          dragRef.current = { mode: "region-end", spanId: span.id };
+                        }}
+                      />
+                    )}
                   </div>
-
-                  {/* Start edge handle */}
-                  {startEdge && span.start - block.segSrcStart > 0.01 && (
-                    <div
-                      className={`region-edge-handle region-edge-handle--left${spared ? " region-edge-handle--spared" : ""}`}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        e.currentTarget.setPointerCapture(e.pointerId);
-                        setTooltip(null);
-                        update({ selectedSpanId: span.id });
-                        const snap = takeSnapshot(state);
-                        update(pushUndo(state, snap));
-                        dragRef.current = { mode: "region-start", spanId: span.id };
-                      }}
-                    />
-                  )}
-
-                  {/* End edge handle */}
-                  {endEdge && block.segSrcEnd - span.end > 0.01 && (
-                    <div
-                      className={`region-edge-handle region-edge-handle--right${spared ? " region-edge-handle--spared" : ""}`}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        e.currentTarget.setPointerCapture(e.pointerId);
-                        setTooltip(null);
-                        update({ selectedSpanId: span.id });
-                        const snap = takeSnapshot(state);
-                        update(pushUndo(state, snap));
-                        dragRef.current = { mode: "region-end", spanId: span.id };
-                      }}
-                    />
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
 
             {/* ── Snap indicator ──────────────────────────────────────── */}
             {snapTime !== null && (
@@ -1168,6 +1214,7 @@ export function Timeline({ state, update, onSeek, onOpenImport }: TimelineProps)
             {/* ── Playhead ────────────────────────────────────────────── */}
             {timelineDuration > 0 && (
               <div
+                ref={playheadElRef}
                 className="timeline-playhead"
                 style={{ left: state.playhead * pps }}
               />

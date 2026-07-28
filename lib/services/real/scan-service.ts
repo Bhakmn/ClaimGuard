@@ -17,27 +17,22 @@ import type { MediaItem, FlaggedSpan } from "@/lib/types";
 import type { ScanService, ScanProgress, ScanRequest, ScanStageIndex } from "@/lib/mock/scan-service";
 import { identifySample, type IdentifyMatch } from "@/lib/api/identify";
 
-/* ─── Audio extraction ───────────────────────────────────────────────────── */
+/* ─── Audio decoding — decode once per item, slice per chunk ────────────── */
 
 /**
- * Extract a 5-second mono 8 kHz PCM WAV slice from `url` starting at
- * `startSeconds`. Returns a Blob of type audio/wav, or null when the Web Audio
- * API is not available (e.g. in a test environment).
+ * Fetch and decode an entire media file into an AudioBuffer exactly once.
+ * Returns null if the Web Audio API is unavailable or decoding fails.
  */
-async function extractAudioChunk(
+async function decodeMediaFile(
   url: string,
-  startSeconds: number,
-  durationSeconds: number,
-): Promise<Blob | null> {
+  signal: AbortSignal,
+): Promise<AudioBuffer | null> {
   try {
-    const SAMPLE_RATE = 8_000;
-    const sampleCount = Math.round(durationSeconds * SAMPLE_RATE);
-
-    // Fetch the media into an ArrayBuffer
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal });
     const arrayBuffer = await resp.arrayBuffer();
 
-    // Decode
+    if (signal.aborted) return null;
+
     const AudioCtx =
       window.AudioContext ||
       (window as typeof window & { webkitAudioContext?: typeof AudioContext })
@@ -51,27 +46,32 @@ async function extractAudioChunk(
     } finally {
       await audioCtx.close();
     }
-
-    // Render the slice at 8 kHz mono
-    const offline = new OfflineAudioContext(
-      1,                    // 1 channel (mono)
-      sampleCount,
-      SAMPLE_RATE,
-    );
-
-    const source = offline.createBufferSource();
-    source.buffer = decoded;
-    source.connect(offline.destination);
-    source.start(0, startSeconds, durationSeconds);
-
-    const rendered = await offline.startRendering();
-    const pcm = rendered.getChannelData(0);
-
-    // Encode as 16-bit PCM WAV
-    return pcmToWav(pcm, SAMPLE_RATE);
+    return decoded;
   } catch {
     return null;
   }
+}
+
+/**
+ * Render a slice of an already-decoded AudioBuffer as a 16-bit mono 8 kHz
+ * WAV Blob.  No network fetch, no re-decode — O(1) per chunk.
+ */
+async function sliceToWavAsync(
+  decoded: AudioBuffer,
+  startSeconds: number,
+  durationSeconds: number,
+): Promise<Blob> {
+  const SAMPLE_RATE = 8_000;
+  const sampleCount = Math.max(1, Math.round(durationSeconds * SAMPLE_RATE));
+
+  const offline = new OfflineAudioContext(1, sampleCount, SAMPLE_RATE);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start(0, startSeconds, durationSeconds);
+
+  const rendered = await offline.startRendering();
+  return pcmToWav(rendered.getChannelData(0), SAMPLE_RATE);
 }
 
 /** Encode a Float32Array of PCM samples as a 16-bit mono WAV Blob. */
@@ -93,8 +93,8 @@ function pcmToWav(samples: Float32Array, sampleRate: number): Blob {
   view.setUint32(4, 36 + dataLength, true);
   writeStr(8, "WAVE");
   writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);         // PCM chunk size
-  view.setUint16(20, 1, true);          // PCM format
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * numChannels * BYTES_PER_SAMPLE, true);
@@ -158,110 +158,151 @@ function matchesToSpan(
   };
 }
 
+/* ─── Cancellation ───────────────────────────────────────────────────────── */
+
+// Module-level AbortController so any new scan cancels the previous one.
+// This prevents stale identify requests from a prior scan from continuing
+// to fire after the user has started a new scan or loaded a new file.
+let activeScanController: AbortController | null = null;
+
 /* ─── Real scan service ──────────────────────────────────────────────────── */
 
 export const realScanService: ScanService = {
   async scan(request: ScanRequest, onProgress: (p: ScanProgress) => void): Promise<FlaggedSpan[]> {
+    // Cancel any in-flight scan before starting a new one.
+    if (activeScanController) {
+      activeScanController.abort();
+    }
+    const controller = new AbortController();
+    activeScanController = controller;
+    const signal = controller.signal;
+
     const found: FlaggedSpan[] = [];
     const emit = (
       stage: ScanStageIndex,
       fraction: number,
       status: string,
     ) => {
+      if (signal.aborted) return;
       onProgress({ stage, fraction, status, found: [...found] });
     };
 
-    // Stage 0 — engine load (instantaneous in real mode, but we still show it)
-    emit(0, 0, "Preparing the audio engine…");
+    try {
+      // Emit all pre-fingerprint stages in a single batched update so they
+      // don't each trigger a separate React re-render + effect evaluation.
+      emit(0, 0, "Preparing the audio engine…");
 
-    // Stage 1 — prepare
-    for (const item of request.items) {
-      emit(1, 0, `Preparing ${item.name}…`);
-    }
-
-    // Stage 2 — waveform (already handled elsewhere; skip if present)
-    for (const item of request.items) {
-      if (!item.waveform) {
-        emit(2, 0, "Generating waveform…");
+      // Stage 3 — fingerprint
+      const CHUNK_SECS = 5;
+      let totalChunks = 0;
+      const itemChunkCounts: number[] = [];
+      for (const item of request.items) {
+        const count = Math.max(1, Math.ceil(item.duration / CHUNK_SECS));
+        itemChunkCounts.push(count);
+        totalChunks += count;
       }
-    }
 
-    // Stage 3 — fingerprint
-    const CHUNK_SECS = 5;
-    let totalChunks = 0;
-    const itemChunkCounts: number[] = [];
-    for (const item of request.items) {
-      const count = Math.max(1, Math.ceil(item.duration / CHUNK_SECS));
-      itemChunkCounts.push(count);
-      totalChunks += count;
-    }
+      let chunksDone = 0;
 
-    let chunksDone = 0;
+      for (let itemIdx = 0; itemIdx < request.items.length; itemIdx++) {
+        if (signal.aborted) break;
 
-    for (let itemIdx = 0; itemIdx < request.items.length; itemIdx++) {
-      const item = request.items[itemIdx];
-      const chunkCount = itemChunkCounts[itemIdx] ?? 1;
+        const item = request.items[itemIdx];
+        const chunkCount = itemChunkCounts[itemIdx] ?? 1;
 
-      // Per-item active span tracker
-      let active: ActiveSpan | null = null;
+        emit(1, 0, `Preparing ${item.name}…`);
 
-      for (let i = 0; i < chunkCount; i++) {
-        const start = i * CHUNK_SECS;
-        const end = Math.min(start + CHUNK_SECS, item.duration);
-        const duration = end - start;
-        const globalChunk = chunksDone + i;
-        const fraction = (globalChunk + 1) / totalChunks;
+        // Decode the entire file ONCE for this item, then slice per chunk.
+        // Previously this decoded the full file once per chunk — O(n²) in
+        // duration — which caused all identify requests to fire almost
+        // simultaneously and pile up in memory.
+        emit(2, 0, `Decoding audio for ${item.name}…`);
+        const decoded = await decodeMediaFile(item.url, signal);
+        if (signal.aborted) break;
 
-        emit(
-          3,
-          fraction,
-          `Scanning ${item.name} ${formatTime(start)}–${formatTime(end)}…`,
-        );
-
-        // Extract audio slice
-        const blob = await extractAudioChunk(item.url, start, duration);
-
-        let match: IdentifyMatch = null;
-        if (blob) {
-          match = await identifySample(blob);
+        if (!decoded) {
+          // Can't decode — skip this item but don't abort the whole scan.
+          chunksDone += chunkCount;
+          continue;
         }
 
-        if (match) {
-          if (active && active.acrid === match.acrid) {
-            // Same song — extend the existing span
-            const idx = found.findIndex((s) => s.id === active!.spanId);
-            if (idx >= 0) {
-              const adjusted =
-                match.sampleEndMs != null
-                  ? start + match.sampleEndMs / 1_000
-                  : end;
-              found[idx] = { ...found[idx], end: adjusted };
-              emit(3, fraction, `Pinpointing where "${match.title}" ends…`);
+        // Per-item active span tracker
+        let active: ActiveSpan | null = null;
+
+        for (let i = 0; i < chunkCount; i++) {
+          if (signal.aborted) break;
+
+          const start = i * CHUNK_SECS;
+          const end = Math.min(start + CHUNK_SECS, item.duration);
+          const duration = end - start;
+          const globalChunk = chunksDone + i;
+          const fraction = (globalChunk + 1) / totalChunks;
+
+          emit(
+            3,
+            fraction,
+            `Scanning ${item.name} ${formatTime(start)}–${formatTime(end)}…`,
+          );
+
+          // Slice from the already-decoded buffer — no network, no re-decode.
+          const blob = await sliceToWavAsync(decoded, start, duration);
+          if (signal.aborted) break;
+
+          let match: IdentifyMatch = null;
+          try {
+            match = await identifySample(blob, signal);
+          } catch (err) {
+            // AbortError is expected when the scan is cancelled — rethrow so
+            // the outer try/catch can handle it cleanly.
+            if (err instanceof Error && err.name === "AbortError") throw err;
+            // Other errors (network, rate-limit, etc.) — skip this chunk.
+            match = null;
+          }
+          if (signal.aborted) break;
+
+          if (match) {
+            if (active && active.acrid === match.acrid) {
+              const idx = found.findIndex((s) => s.id === active!.spanId);
+              if (idx >= 0) {
+                const adjusted =
+                  match.sampleEndMs != null
+                    ? start + match.sampleEndMs / 1_000
+                    : end;
+                found[idx] = { ...found[idx], end: adjusted };
+                emit(3, fraction, `Pinpointing where "${match.title}" ends…`);
+              }
+            } else {
+              active = null;
+              emit(
+                3,
+                fraction,
+                `Music detected — pinpointing where "${match.title}" starts…`,
+              );
+              const span = matchesToSpan(match, item.id, start, end);
+              found.push(span);
+              active = { spanId: span.id, acrid: match.acrid, title: match.title };
             }
           } else {
-            // New song — close any active span and open a new one
-            active = null;
-            emit(
-              3,
-              fraction,
-              `Music detected — pinpointing where "${match.title}" starts…`,
-            );
-            const span = matchesToSpan(match, item.id, start, end);
-            found.push(span);
-            active = { spanId: span.id, acrid: match.acrid, title: match.title };
+            if (active) {
+              emit(3, fraction, `Pinpointing where "${active.title}" ends…`);
+              active = null;
+            }
           }
-        } else {
-          // No match — close active span if open
-          if (active) {
-            emit(3, fraction, `Pinpointing where "${active.title}" ends…`);
-            active = null;
-          }
+
+          onProgress({ stage: 3, fraction, status: "", found: [...found] });
         }
 
-        onProgress({ stage: 3, fraction, status: "", found: [...found] });
+        chunksDone += chunkCount;
       }
+    } finally {
+      // Only clear the module-level reference if we are still the active scan.
+      if (activeScanController === controller) {
+        activeScanController = null;
+      }
+    }
 
-      chunksDone += chunkCount;
+    if (signal.aborted) {
+      throw new DOMException("Scan cancelled", "AbortError");
     }
 
     onProgress({

@@ -38,10 +38,13 @@ const FLAG_WINDOWS = [
   { from: 0.78, to: 0.93 },
 ];
 
-function inFlagWindow(t: number, duration: number): boolean {
-  const f = t / duration;
-  return FLAG_WINDOWS.some((w) => f >= w.from && f <= w.to);
-}
+/* ─── Thumbnail build — one concurrent build per item ID ────────────────── */
+
+// Tracks the cancellation signal for any in-flight thumbnail build.
+// Key = item.id. Value = a flag object; setting cancelled=true causes the
+// running build to abandon its seek loop and resolve with whatever frames it
+// has collected so far (typically none — we discard partial results).
+const activeThumbnailBuilds = new Map<string, { cancelled: boolean }>();
 
 /* ─── Mock implementation ────────────────────────────────────────────────── */
 
@@ -52,24 +55,35 @@ export const mockMediaService: MediaService = {
       el.preload = "metadata";
       el.src = url;
 
+      let settled = false;
+
       const timeout = setTimeout(() => {
-        el.src = "";
+        if (settled) return;
+        settled = true;
+        el.removeAttribute("src");
+        el.load();
         reject(new Error("Could not read the media file."));
       }, 10_000);
 
       el.addEventListener("loadedmetadata", () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         const duration = el.duration;
         const width = kind === "video" ? (el as HTMLVideoElement).videoWidth : 0;
         const height =
           kind === "video" ? (el as HTMLVideoElement).videoHeight : 0;
-        el.src = "";
+        el.removeAttribute("src");
+        el.load();
         resolve({ duration, width, height });
       });
 
       el.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
-        el.src = "";
+        el.removeAttribute("src");
+        el.load();
         reject(new Error("Could not read the media file."));
       });
     });
@@ -87,19 +101,17 @@ export const mockMediaService: MediaService = {
     const peaks = new Float32Array(sampleCount);
     const rand = makePrng(seedFromItem(item));
 
-    // Determine breath positions (3 evenly spaced dips)
     const breathTimes = [
       item.duration * 0.25,
       item.duration * 0.5,
       item.duration * 0.75,
     ];
-    const BREATH_HALF = 0.2; // half-width of each dip
+    const BREATH_HALF = 0.2;
 
     for (let i = 0; i < sampleCount; i++) {
       const t = i / RATE;
       const noise = rand();
 
-      // Breath dip?
       const inBreath = breathTimes.some(
         (bt) => Math.abs(t - bt) <= BREATH_HALF
       );
@@ -108,7 +120,6 @@ export const mockMediaService: MediaService = {
         continue;
       }
 
-      // Inside a flag window?
       const wIdx = FLAG_WINDOWS.findIndex((w) => {
         const f = t / item.duration;
         return f >= w.from && f <= w.to;
@@ -144,63 +155,99 @@ export const mockMediaService: MediaService = {
     if (controls.stallMedia) return new Promise(() => undefined);
     if (controls.offline) return null;
 
+    // Cancel any in-flight build for this item before starting a new one.
+    // This prevents two concurrent seek loops loading the same blob URL,
+    // which causes Safari to hit its media decoder limit and crash the tab.
+    const prev = activeThumbnailBuilds.get(item.id);
+    if (prev) {
+      prev!.cancelled = true;
+    }
+    const signal = { cancelled: false };
+    activeThumbnailBuilds.set(item.id, signal);
+
     const FRAME_H = 112;
     const aspect = item.width && item.height ? item.width / item.height : 16 / 9;
-    const frameW = Math.round(FRAME_H * aspect);
-    const frameCount = Math.max(8, Math.min(40, Math.floor(item.duration / 2)));
+    const frameW = Math.max(1, Math.round(FRAME_H * aspect));
+    // 12 frames is enough for the filmstrip; each ImageBitmap is GPU memory.
+    // We generate them exactly once per item load and never regenerate.
+    const FRAME_COUNT = 12;
 
     const frames: { time: number; bitmap: ImageBitmap }[] = [];
 
-    // Use a hidden <video> element to seek-and-capture each frame.
-    // Must be in the DOM and use preload="auto" so the browser actually buffers
-    // frame data (not just metadata), making seeks reliable.
+    // Give the scraper its own independent blob URL so it never shares a media
+    // pipeline with the player's <video> element.  Clearing or aborting the
+    // scraper's URL cannot stall or MEDIA_ERR_DECODE the player that way.
+    const scraperUrl = URL.createObjectURL(item.file);
+
     const video = document.createElement("video");
     video.muted = true;
     video.preload = "auto";
     video.playsInline = true;
-    video.crossOrigin = "anonymous";
     video.style.cssText =
       "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0";
     document.body.appendChild(video);
 
     try {
-      // Set src and explicitly call load() — required for preload="auto" to start.
-      video.src = item.url;
+      video.src = scraperUrl;
       video.load();
 
-      // Wait until the browser has buffered enough to seek anywhere (loadeddata
-      // fires after the first frame is decoded; for short files that's enough,
-      // and for long files the seeks below have individual timeouts as fallback).
-      await new Promise<void>((resolve, reject) => {
-        const tid = setTimeout(resolve, 8_000); // timeout → try seeking anyway
+      // Wait for enough data to seek reliably.
+      // Treat error the same as a timeout — attempt seeks anyway rather than
+      // aborting the whole build on a transient decode hiccup.
+      await new Promise<void>((resolve) => {
+        const tid = setTimeout(resolve, 8_000);
         const onReady = () => { clearTimeout(tid); resolve(); };
-        const onError = () => { clearTimeout(tid); reject(new Error("video load error")); };
         video.addEventListener("loadeddata", onReady, { once: true });
-        video.addEventListener("error", onError, { once: true });
+        video.addEventListener("error", onReady, { once: true });
       });
 
-      for (let i = 0; i < frameCount; i++) {
-        const time = ((i + 0.5) / frameCount) * item.duration;
+      for (let i = 0; i < FRAME_COUNT; i++) {
+        // Check cancellation before every seek — a new file may have been
+        // loaded while we were waiting for the previous seek to complete.
+        if (signal.cancelled) break;
 
-        // Seek to the target time; fall through on timeout rather than rejecting.
+        const time = ((i + 0.5) / FRAME_COUNT) * item.duration;
+
         await new Promise<void>((resolve) => {
-          const tid = setTimeout(resolve, 4_000);
-          video.addEventListener("seeked", () => { clearTimeout(tid); resolve(); }, { once: true });
+          const tid = setTimeout(resolve, 3_000);
+          const onSeeked = () => { clearTimeout(tid); resolve(); };
+          const onError = () => { clearTimeout(tid); resolve(); }; // treat error as timeout
+          video.addEventListener("seeked", onSeeked, { once: true });
+          video.addEventListener("error", onError, { once: true });
           video.currentTime = time;
         });
 
-        // Capture frame — if the seek timed out the browser will draw whatever
-        // it has, which is still better than a blank tile.
-        const canvas = new OffscreenCanvas(frameW, FRAME_H);
-        const ctx = canvas.getContext("2d");
-        if (!ctx) continue;
-        ctx.drawImage(video, 0, 0, frameW, FRAME_H);
-        frames.push({ time, bitmap: await createImageBitmap(canvas) });
+        if (signal.cancelled) break;
+
+        try {
+          const canvas = new OffscreenCanvas(frameW, FRAME_H);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ctx = canvas.getContext("2d") as any;
+          if (ctx != null) {
+            ctx.drawImage(video, 0, 0, frameW, FRAME_H);
+            const bmp = await createImageBitmap(canvas);
+            frames.push({ time, bitmap: bmp });
+          }
+        } catch {
+          // drawImage / createImageBitmap can fail if the video is in an error
+          // state — skip this frame rather than aborting the whole build.
+        }
       }
     } finally {
-      video.src = "";
-      document.body.removeChild(video);
+      // Always clean up the scraper element and revoke its private URL.
+      // This never touches item.url so the player element is unaffected.
+      video.removeAttribute("src");
+      video.load(); // abort any pending network activity on the scraper URL
+      if (video.parentNode != null) (video.parentNode as Element).removeChild(video);
+      URL.revokeObjectURL(scraperUrl);
+      // Remove from the active-builds map only if we are still the current build.
+      if (activeThumbnailBuilds.get(item.id) === signal) {
+        activeThumbnailBuilds.delete(item.id);
+      }
     }
+
+    // If we were cancelled, return null — the caller should ignore this result.
+    if (signal.cancelled) return null;
 
     return frames.length > 0 ? { frames, aspect } : null;
   },

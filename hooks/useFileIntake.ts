@@ -30,7 +30,7 @@ export interface FileIntakeCallbacks {
   queue: File[];
   onEnqueue: (files: File[]) => void;
   onError: (msg: string) => void;
-  onMediaReady: (item: MediaItem, autoScan: boolean) => void;
+  onMediaReady: (item: MediaItem) => void;
   /** Called while the probe is running so the Start button dims. */
   onLoadStart: () => void;
   onLoadEnd: () => void;
@@ -89,7 +89,7 @@ export function useFileIntake({
           waveform: null,
           thumbnails: null,
         };
-        onMediaReady(item, true);
+        onMediaReady(item);
       } catch {
         URL.revokeObjectURL(url);
         onError("Could not read the media file.");

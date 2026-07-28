@@ -1,13 +1,14 @@
 "use client";
 
-import React, { useRef, useCallback, useEffect, useState } from "react";
+import React, { useRef, useCallback, useState } from "react";
 import type { MediaItem, TrackSegment, FlaggedSpan } from "@/lib/types";
 import type { WorkspaceState } from "@/lib/workspace-state";
 import { usePlaybackEngine } from "@/hooks/usePlaybackEngine";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { Player } from "./Player";
 import { ActionRow } from "./ActionRow";
-import { Timeline } from "@/components/timeline/Timeline";
+import { Timeline, type TimelineTickHandle } from "@/components/timeline/Timeline";
+import { EditorErrorBoundary } from "./EditorErrorBoundary";
 import { takeSnapshot, pushUndo } from "@/lib/workspace-state";
 import { nextId } from "@/lib/mock/scan-service";
 import { trackEnd, resolveSourceAt } from "@/lib/types";
@@ -38,7 +39,12 @@ export function WorkspacePanel({
   scanTriggerRef,
 }: WorkspacePanelProps) {
   const online = useOnlineStatus();
+
+  // Active video id is driven imperatively from onTick — never written to
+  // React state during playback so the component tree does not re-render
+  // on every animation frame.
   const [activeVideoMediaId, setActiveVideoMediaId] = useState<string | null>(null);
+  const activeVideoMediaIdRef = useRef<string | null>(null);
 
   const primaryItem = state.items[0] ?? null;
   const timelineDuration = Math.max(
@@ -46,7 +52,38 @@ export function WorkspacePanel({
     trackEnd(state.audioSegments)
   );
 
+  // Imperative handle populated by Timeline — used in onTick to move the
+  // playhead needle and scroll without touching React state.
+  const timelineTickRef = useRef<TimelineTickHandle | null>(null);
+
+  // Pool refs for Player visibility — driven imperatively from onTick.
+  const videoElsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+
   /* ── Playback engine ───────────────────────────────────────────────────── */
+  const handleTick = useCallback(
+    (t: number, newActiveId: string | null) => {
+      // Move playhead needle + scroll — pure DOM, no setState.
+      timelineTickRef.current?.tick(t);
+
+      // Update video element visibility imperatively.
+      if (newActiveId !== activeVideoMediaIdRef.current) {
+        activeVideoMediaIdRef.current = newActiveId;
+        videoElsRef.current.forEach((el, id) => {
+          el.style.display = id === newActiveId ? "block" : "none";
+        });
+        // Sync React state once on change so Player's initial render is correct
+        // and error banners (which depend on items, not activeVideoMediaId) still work.
+        setActiveVideoMediaId(newActiveId);
+      }
+    },
+    []
+  );
+
+  const handlePlayEnd = useCallback(
+    () => update({ playing: false }),
+    [update]
+  );
+
   const { pool, play, pause, seek, seekDelta } = usePlaybackEngine({
     items: state.items,
     videoSegments: state.videoSegments,
@@ -55,18 +92,9 @@ export function WorkspacePanel({
     muted: state.muted,
     previewVolume: state.previewVolume,
     timelineDuration,
-    onTimeUpdate: useCallback(
-      (t: number) => update({ playhead: t }),
-      [update]
-    ),
-    onPlayEnd: useCallback(
-      () => update({ playing: false }),
-      [update]
-    ),
-    onActiveVideoId: useCallback(
-      (id: string | null) => setActiveVideoMediaId(id),
-      []
-    ),
+    onTick: handleTick,
+    onTimeUpdate: useCallback((t: number) => update({ playhead: t }), [update]),
+    onPlayEnd: handlePlayEnd,
   });
 
   const handleTogglePlay = useCallback(() => {
@@ -191,20 +219,23 @@ export function WorkspacePanel({
       {/* Player */}
       <Player
         items={state.items}
-        videoSegments={state.videoSegments}
         activeVideoMediaId={activeVideoMediaId}
         pool={pool}
         onTogglePlay={handleTogglePlay}
+        videoElsRef={videoElsRef}
       />
 
       {/* Timeline */}
       <div style={{ marginTop: 12 }}>
-        <Timeline
-          state={state}
-          update={update}
-          onSeek={(t) => update({ playhead: t })}
-          onOpenImport={() => importInputRef.current?.click()}
-        />
+        <EditorErrorBoundary label="Timeline">
+          <Timeline
+            state={state}
+            update={update}
+            onSeek={(t) => { seek(t); }}
+            onOpenImport={() => importInputRef.current?.click()}
+            tickRef={timelineTickRef}
+          />
+        </EditorErrorBoundary>
       </div>
 
       {/* Action row */}

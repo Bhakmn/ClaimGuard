@@ -978,6 +978,13 @@ html, body {
 }
 
 /* Player wrapper */
+/* Outer shell — holds the error banner + the clickable wrapper */
+.player-wrapper-outer {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .player-wrapper {
   position: relative;
   cursor: pointer;
@@ -1013,6 +1020,42 @@ html, body {
   font-family: var(--font-courier), "Courier Prime", monospace;
   font-size: 12.5px;
   border-radius: 10px;
+}
+
+/* Media error banner */
+.player-media-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: rgba(198,93,59,0.1);
+  border: 1px solid #C65D3B;
+  border-radius: 7px;
+  margin-bottom: 8px;
+  font-family: var(--font-courier), "Courier Prime", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.player-media-error__msg {
+  flex: 1;
+  color: #7a2f0f;
+}
+.player-media-error__reload {
+  flex-shrink: 0;
+  cursor: pointer;
+  border: 1px solid #C65D3B;
+  background: #fff;
+  color: #C65D3B;
+  font-family: var(--font-courier), "Courier Prime", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.player-media-error__reload:hover {
+  background: #C65D3B;
+  color: #fff;
 }
 
 /* Action row */
@@ -1132,7 +1175,7 @@ html, body {
 /* Content */
 .timeline-content {
   position: relative;
-  height: 138px;
+  height: 155px;
 }
 
 /* Ruler */
@@ -1163,9 +1206,10 @@ html, body {
   background: rgba(31,31,31,0.045);
   border-bottom: 1px solid #D1D1C9;
 }
+/* Audio track: 17px label row + 56px waveform row = 73px total */
 .audio-track {
   top: 82px;
-  height: 56px;
+  height: 73px;
   background: rgba(43,122,75,0.045);
 }
 
@@ -1274,20 +1318,34 @@ html, body {
 .trim-handle--left::after  { left: 2px; }
 .trim-handle--right::after { right: 2px; }
 
-/* Flag regions */
+/* Flag regions — children of .audio-track.
+   top:3px sits inside the clip's 1px border + 5px radius so the label
+   strip looks inset rather than overhanging the clip edge.
+   The tinted fill starts below the 17px label row via a gradient. */
 .flag-region {
   position: absolute;
-  top: 84px;
-  bottom: 3px;
-  background: rgba(198,93,59,0.2);
+  top: 3px;
+  bottom: 2px;
+  /* Fill starts below the 17px label row */
+  background: linear-gradient(
+    to bottom,
+    transparent 17px,
+    rgba(198,93,59,0.08) 17px
+  );
   border: 1px solid #C65D3B;
-  border-radius: 6px;
-  overflow: hidden;
-  z-index: 3;
+  border-radius: 5px;
+  overflow: visible;
+  /* No z-index — avoids forming a stacking context so the waveform canvas
+     (z-index:2 on the track) can paint above the fill while the edge handles
+     (z-index:3) and label strip remain above the canvas. */
   pointer-events: none;
 }
 .flag-region--spared {
-  background: rgba(31,31,31,0.08);
+  background: linear-gradient(
+    to bottom,
+    transparent 17px,
+    rgba(31,31,31,0.04) 17px
+  );
   border-color: #6F6A5F;
 }
 .flag-region--selected {
@@ -1295,7 +1353,8 @@ html, body {
   outline-offset: -1px;
 }
 
-/* Region label strip */
+/* Region label strip — occupies the top 17px of the audio track (above the
+   waveform). pointer-events:auto keeps it clickable. */
 .region-label-strip {
   position: absolute;
   top: 0;
@@ -1309,6 +1368,7 @@ html, body {
   display: flex;
   align-items: center;
   overflow: hidden;
+  border-radius: 5px 5px 0 0;
 }
 .region-label-strip--spared {
   background: rgba(111,106,95,0.7);
@@ -1326,14 +1386,15 @@ html, body {
   flex: 1;
 }
 
-/* Region edge handles */
+/* Region edge handles — span the waveform row only (top:17px), z-index 3
+   so they stay above the waveform canvas (z-index 2) */
 .region-edge-handle {
   position: absolute;
-  top: 0;
+  top: 17px;
   bottom: 0;
   width: 10px;
   cursor: ew-resize;
-  z-index: 2;
+  z-index: 3;
   pointer-events: auto;
   touch-action: none;
 }

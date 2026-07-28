@@ -25,12 +25,13 @@ export type IdentifyMatch = {
  * Do NOT set Content-Type — the browser sets the multipart boundary itself,
  * and an explicit header breaks the upload.
  */
-export async function identifySample(sample: Blob): Promise<IdentifyMatch> {
+export async function identifySample(sample: Blob, signal?: AbortSignal): Promise<IdentifyMatch> {
   const form = new FormData();
   form.append("sample", sample, "sample.wav");
   const data = await apiFetch<{ match?: IdentifyMatch }>("/api/identify", {
     method: "POST",
     body: form,
+    signal,
   });
   return data.match ?? null;
 }

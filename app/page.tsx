@@ -12,6 +12,7 @@ import { ToastStack } from "@/components/primitives/Toast";
 import { IntroSplash, introHasPlayed } from "@/components/IntroSplash";
 import { LaunchScreen } from "@/components/launch/LaunchScreen";
 import { ScanOverlay } from "@/components/scan/ScanOverlay";
+import { EditorErrorBoundary } from "@/components/workspace/EditorErrorBoundary";
 import { WorkspacePanel } from "@/components/workspace/WorkspacePanel";
 import { FlaggedSectionsPanel } from "@/components/workspace/FlaggedSectionsPanel";
 import { ResultPanel } from "@/components/workspace/ResultPanel";
@@ -29,6 +30,18 @@ import { nextId } from "@/lib/mock/scan-service";
 import { formatClock } from "@/lib/formatters";
 import { mergeRanges } from "@/lib/intervals";
 import { clipsEdited } from "@/lib/clips-edited";
+
+/* ─── ImageBitmap cleanup helper ─────────────────────────────────────────── */
+/** Close all ImageBitmap frames held by a list of MediaItems to free GPU memory. */
+function closeItemBitmaps(items: MediaItem[]): void {
+  for (const item of items) {
+    if (item.thumbnails) {
+      for (const f of item.thumbnails.frames) {
+        try { f.bitmap.close(); } catch { /* already closed */ }
+      }
+    }
+  }
+}
 
 /* ─── Extra scan-UI state ────────────────────────────────────────────────── */
 interface ScanMeta {
@@ -51,7 +64,10 @@ function WorkspaceInner() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const autoScanPending = useRef(false);
+  // Synchronous in-flight flag — set before the first await so the guard
+  // is effective even when called twice in the same synchronous frame.
+  const scanInFlightRef = useRef(false);
+
   const scanTriggerRef = useRef<HTMLElement | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -93,6 +109,10 @@ function WorkspaceInner() {
     ) => {
       const items = itemsOverride ?? stateRef.current.items;
       if (items.length === 0) return;
+      // Guard: synchronous ref is set before the first await so it blocks any
+      // concurrent call even within the same render cycle.
+      if (scanInFlightRef.current) return;
+      scanInFlightRef.current = true;
       const openOverlay = mode === "replace";
 
       setScanMeta({ startMs: Date.now(), failureMessage: null });
@@ -156,18 +176,12 @@ function WorkspaceInner() {
           scanning: false,
           errorMessage: msg,
         }));
+      } finally {
+        scanInFlightRef.current = false;
       }
     },
     [services.scan]
   );
-
-  /* ─── Auto-scan trigger ──────────────────────────────────────────────── */
-  useEffect(() => {
-    if (!autoScanPending.current) return;
-    if (state.items.length === 0) return;
-    autoScanPending.current = false;
-    runScan("replace");
-  }, [state.items, runScan]);
 
   /* ─── Manual scan ────────────────────────────────────────────────────── */
   const handleScan = useCallback(() => {
@@ -197,7 +211,7 @@ function WorkspaceInner() {
 
   /* ─── Media ready (launch screen "Start") ────────────────────────────── */
   const handleMediaReady = useCallback(
-    (item: MediaItem, autoScan: boolean) => {
+    (item: MediaItem) => {
       const videoSeg: TrackSegment = {
         id: nextId(),
         mediaId: item.id,
@@ -215,31 +229,51 @@ function WorkspaceInner() {
         enabled: true,
         gain: 1,
       };
-      autoScanPending.current = autoScan;
+      // Free GPU memory from any previously loaded video's thumbnails
+      closeItemBitmaps(stateRef.current.items);
       setStateRaw({
         ...INITIAL_STATE,
         items: [item],
         videoSegments: [videoSeg],
         audioSegments: [audioSeg],
       });
-      services.media.loadWaveform(item).then((waveform) => {
-        setStateRaw((prev) => ({
-          ...prev,
-          items: prev.items.map((it) =>
-            it.id === item.id ? { ...it, waveform } : it
-          ),
-        }));
-      });
-      services.media.buildThumbnails(item).then((thumbnails) => {
-        setStateRaw((prev) => ({
-          ...prev,
-          items: prev.items.map((it) =>
-            it.id === item.id ? { ...it, thumbnails } : it
-          ),
-        }));
-      });
+      services.media.loadWaveform(item)
+        .then((waveform) => {
+          setStateRaw((prev) => ({
+            ...prev,
+            items: prev.items.map((it) =>
+              it.id === item.id ? { ...it, waveform } : it
+            ),
+          }));
+        })
+        .catch((err: unknown) => {
+          console.error("[media] loadWaveform failed:", err);
+        });
+
+      services.media.buildThumbnails(item)
+        .then((thumbnails) => {
+          // buildThumbnails returns null when cancelled — skip the state update.
+          if (thumbnails === null) return;
+          setStateRaw((prev) => {
+            const old = prev.items.find((it) => it.id === item.id);
+            if (old?.thumbnails) closeItemBitmaps([old]);
+            return {
+              ...prev,
+              items: prev.items.map((it) =>
+                it.id === item.id ? { ...it, thumbnails } : it
+              ),
+            };
+          });
+        })
+        .catch((err: unknown) => {
+          console.error("[media] buildThumbnails failed:", err);
+        });
+
+      // Auto-scan immediately — pass item directly so we don't depend on
+      // stateRef being updated yet (setStateRaw is async/batched).
+      runScan("replace", [item]);
     },
-    [services.media]
+    [services.media, runScan]
   );
 
   /* ─── Import media ───────────────────────────────────────────────────── */
@@ -289,23 +323,37 @@ function WorkspaceInner() {
       };
 
       // Background waveform + thumbnails
-      services.media.loadWaveform(item).then((waveform) => {
-        setStateRaw((prev) => ({
-          ...prev,
-          items: prev.items.map((it) =>
-            it.id === item.id ? { ...it, waveform } : it
-          ),
-        }));
-      });
-      if (kind === "video") {
-        services.media.buildThumbnails(item).then((thumbnails) => {
+      services.media.loadWaveform(item)
+        .then((waveform) => {
           setStateRaw((prev) => ({
             ...prev,
             items: prev.items.map((it) =>
-              it.id === item.id ? { ...it, thumbnails } : it
+              it.id === item.id ? { ...it, waveform } : it
             ),
           }));
+        })
+        .catch((err: unknown) => {
+          console.error("[media] loadWaveform failed:", err);
         });
+
+      if (kind === "video") {
+        services.media.buildThumbnails(item)
+          .then((thumbnails) => {
+            if (thumbnails === null) return;
+            setStateRaw((prev) => {
+              const old = prev.items.find((it) => it.id === item.id);
+              if (old?.thumbnails) closeItemBitmaps([old]);
+              return {
+                ...prev,
+                items: prev.items.map((it) =>
+                  it.id === item.id ? { ...it, thumbnails } : it
+                ),
+              };
+            });
+          })
+          .catch((err: unknown) => {
+            console.error("[media] buildThumbnails failed:", err);
+          });
       }
 
       // Drop position = current timeline end
@@ -401,7 +449,7 @@ function WorkspaceInner() {
             waveform: null,
             thumbnails: null,
           };
-          handleMediaReady(item, true);
+          handleMediaReady(item);
         })
         .catch(() => {
           URL.revokeObjectURL(url);
@@ -412,6 +460,7 @@ function WorkspaceInner() {
         });
     } else {
       // Full reset → launch screen
+      closeItemBitmaps(state.items);
       for (const item of state.items) URL.revokeObjectURL(item.url);
       if (state.exportResult) URL.revokeObjectURL(state.exportResult.url);
       setStateRaw(INITIAL_STATE);
@@ -578,10 +627,9 @@ function WorkspaceInner() {
       return;
     }
 
-    // Revoke any previous export result URL (the mock shares the source URL,
-    // so only revoke if it differs from the primary item URL)
+    // Revoke any previous export result URL — always a fresh blob, always safe to revoke.
     const prevResult = stateRef.current.exportResult;
-    if (prevResult && prevResult.url !== primary.url) {
+    if (prevResult) {
       URL.revokeObjectURL(prevResult.url);
     }
 
@@ -656,15 +704,17 @@ function WorkspaceInner() {
           {/* Panel 1 — Preview, timeline, actions */}
           <section aria-labelledby="panel1-heading">
             <h2 id="panel1-heading" className="sr-only">Preview and timeline</h2>
-            <WorkspacePanel
-              state={state}
-              update={update}
-              onScan={handleScan}
-              onImportFile={handleImportFile}
-              onNextOrChoose={handleNextOrChoose}
-              importInputRef={importInputRef}
-              scanTriggerRef={scanTriggerRef}
-            />
+            <EditorErrorBoundary label="Editor" onReset={() => update({ errorMessage: null })}>
+              <WorkspacePanel
+                state={state}
+                update={update}
+                onScan={handleScan}
+                onImportFile={handleImportFile}
+                onNextOrChoose={handleNextOrChoose}
+                importInputRef={importInputRef}
+                scanTriggerRef={scanTriggerRef}
+              />
+            </EditorErrorBoundary>
           </section>
 
           {/* Hidden import input */}

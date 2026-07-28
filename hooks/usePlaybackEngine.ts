@@ -21,11 +21,18 @@ export interface PlaybackEngineOptions {
   previewVolume: number;
   /** Timeline duration (seconds) */
   timelineDuration: number;
-  /** Mirror clock into React state (fires when delta > 0.001 s) */
+  /**
+   * Called once per RAF tick with the current clock position and active video
+   * id.  Runs outside React — do NOT call setState here.  Use it to move DOM
+   * nodes (playhead needle, scroll position) imperatively.
+   */
+  onTick: (t: number, activeVideoId: string | null) => void;
+  /**
+   * Called only on explicit seek or play-end — safe to write to React state.
+   * NOT called on every animation frame.
+   */
   onTimeUpdate: (t: number) => void;
   onPlayEnd: () => void;
-  /** Called each frame with the active video media id (null in a gap). */
-  onActiveVideoId: (id: string | null) => void;
 }
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -170,12 +177,8 @@ export function usePlaybackEngine(options: PlaybackEngineOptions) {
       }
     }
 
-    // ── Mirror to state (if moved > 0.001 s) ────────────────────────── //
-    const newT = clockRef.current;
-    o.onActiveVideoId(activeVideoId);
-    if (Math.abs(newT - t) > 0.001 || (o.playing && dt > 0)) {
-      o.onTimeUpdate(newT);
-    }
+    // ── Imperative tick — no setState, moves DOM directly ───────────── //
+    o.onTick(clockRef.current, activeVideoId);
   }, []);
 
   // Start/stop RAF

@@ -16,7 +16,7 @@ interface LaunchScreenProps {
   launchStep: "drop" | "queue";
   onQueueChange: (q: File[]) => void;
   onStepChange: (s: "drop" | "queue") => void;
-  onMediaReady: (item: MediaItem, autoScan: boolean) => void;
+  onMediaReady: (item: MediaItem) => void;
   onDropError: (msg: string) => void;
 }
 

@@ -18,6 +18,7 @@ import { mockPublishService, type PublishService } from "../mock/publish-service
 import { realScanService } from "./real/scan-service";
 import { realAccountService } from "./real/account-service";
 import { realPublishService } from "./real/publish-service";
+import { realExportService } from "./real/export-service";
 
 /* ─── Feature flag ───────────────────────────────────────────────────────── */
 
@@ -98,7 +99,7 @@ export function ServicesProvider({ children }: { children: ReactNode }) {
         setServices({
           media:   mockMediaService,
           scan:    realScanService,
-          export:  mockExportService,
+          export:  realExportService,
           account: realAccountService,
           publish: realPublishService,
           controls,
@@ -107,7 +108,7 @@ export function ServicesProvider({ children }: { children: ReactNode }) {
         setServices({
           media:   mockMediaService,
           scan:    mockScanService,
-          export:  mockExportService,
+          export:  realExportService,
           account: mockAccountService,
           publish: mockPublishService,
           controls,
