@@ -1,0 +1,27 @@
+{
+  "name": "claimguard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "dev:server": "npm run dev --prefix server",
+    "dev:all": "concurrently --names \"next,server\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run dev:server\"",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.2.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.19",
+    "concurrently": "^9.2.4",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.9.0"
+  }
+}
