@@ -1,4 +1,4 @@
-import type { TrackSegment, ExportStrategy, MediaItem, TimeRange } from "../types";
+import type { TrackSegment, ExportStrategy, MediaItem, TimeRange, FlaggedVisualSpan } from "../types";
 import { complementRanges } from "../intervals";
 import { trackEnd, segmentDuration } from "../types";
 import { delay, getControls } from "./delay";
@@ -9,6 +9,8 @@ export interface ExportRequest {
   videoSegments: TrackSegment[];
   audioSegments: TrackSegment[];
   removals: TimeRange[];
+  /** Visual flagged spans — used when strategy includes video-region handling. */
+  visualRemovals?: TimeRange[];
   primaryId: string;
 }
 

@@ -43,6 +43,33 @@ export interface FlaggedSpan {
   manual: boolean;
 }
 
+/**
+ * A stretch of on-screen (visual) footage that may create copyright exposure.
+ *
+ * Kept as a sibling type — not a union with FlaggedSpan — so Timeline,
+ * FlaggedSectionsPanel, and export-service can handle them independently
+ * without ever-growing discriminated unions on the audio type.
+ *
+ * `signals`  — human-readable heuristic triggers, e.g. ["letterbox bars",
+ *               "platform watermark"].
+ * `reasoning` — full model explanation when available (may be empty string).
+ * `source`    — which detection path produced the flag.
+ */
+export interface FlaggedVisualSpan {
+  id: string;
+  mediaId: string;
+  start: number;          // seconds into the source media
+  end: number;            // seconds into the source media
+  /** Short label shown in the UI, e.g. "Third-party footage". */
+  label: string;
+  signals: string[];
+  reasoning: string;
+  confidence: number;     // 0–100
+  enabled: boolean;
+  manual: boolean;
+  source: "heuristic" | "granite_vision" | "manual";
+}
+
 /** One clip on one lane. */
 export interface TrackSegment {
   id: string;

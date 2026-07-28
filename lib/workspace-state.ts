@@ -1,5 +1,6 @@
 import type {
   FlaggedSpan,
+  FlaggedVisualSpan,
   TrackSegment,
   TrackName,
   ExportStrategy,
@@ -11,6 +12,7 @@ import type { ScanStageIndex } from "@/lib/mock/scan-service";
 /* ─── Undo / redo snapshot ────────────────────────────────────────────────── */
 export interface Snapshot {
   spans: FlaggedSpan[];
+  visualSpans: FlaggedVisualSpan[];
   videoSegments: TrackSegment[];
   audioSegments: TrackSegment[];
 }
@@ -32,11 +34,18 @@ export interface WorkspaceState {
 
   /* Editor */
   spans: FlaggedSpan[];
+  visualSpans: FlaggedVisualSpan[];
   videoSegments: TrackSegment[];
   audioSegments: TrackSegment[];
   selectedSpanId: string | null;
   selectedClip: { lane: TrackName; id: string } | null;
   activeVideoMediaId: string | null;
+
+  /* Visual scan */
+  visualScanning: boolean;
+  visualScanProgress: number;
+  visualScanStatus: string;
+  visualScanned: boolean;
 
   /* Scan */
   scanning: boolean;
@@ -70,11 +79,16 @@ export const INITIAL_STATE: WorkspaceState = {
   muted: false,
   previewVolume: 1,
   spans: [],
+  visualSpans: [],
   videoSegments: [],
   audioSegments: [],
   selectedSpanId: null,
   selectedClip: null,
   activeVideoMediaId: null,
+  visualScanning: false,
+  visualScanProgress: 0,
+  visualScanStatus: "",
+  visualScanned: false,
   scanning: false,
   scanProgress: 0,
   scanStage: 0,
@@ -96,6 +110,7 @@ export const INITIAL_STATE: WorkspaceState = {
 export function takeSnapshot(s: WorkspaceState): Snapshot {
   return {
     spans: s.spans,
+    visualSpans: s.visualSpans,
     videoSegments: s.videoSegments,
     audioSegments: s.audioSegments,
   };

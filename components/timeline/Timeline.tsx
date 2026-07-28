@@ -11,6 +11,7 @@ import type {
   MediaItem,
   TrackSegment,
   FlaggedSpan,
+  FlaggedVisualSpan,
   TrackName,
 } from "@/lib/types";
 import {
@@ -330,7 +331,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     ticks.push({ time, isMajor });
   }
 
-  /* ── Flag region blocks ────────────────────────────────────────────────── */
+  /* ── Audio flag region blocks ──────────────────────────────────────────── */
   interface RegionBlock {
     span: FlaggedSpan;
     left: number;
@@ -367,6 +368,34 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     }
     return blocks;
   }, [state.spans, state.audioSegments, pps]);
+
+  /* ── Visual flag blocks (on video track) ───────────────────────────────── */
+  interface VisualBlock {
+    span: FlaggedVisualSpan;
+    left: number;
+    width: number;
+    first: boolean;
+  }
+
+  const visualBlocks = useMemo<VisualBlock[]>(() => {
+    const blocks: VisualBlock[] = [];
+    const sortedSegs = sortSegments(state.videoSegments);
+    for (const seg of sortedSegs) {
+      const spansForSeg = state.visualSpans.filter(
+        (sp) => sp.mediaId === seg.mediaId
+      );
+      for (const span of spansForSeg) {
+        const s = Math.max(span.start, seg.srcStart);
+        const e = Math.min(span.end, seg.srcEnd);
+        if (e - s < 0.01) continue;
+        const left = (seg.timelineStart + (s - seg.srcStart)) * pps;
+        const width = Math.max(4, (e - s) * pps);
+        const first = !blocks.find((b) => b.span.id === span.id);
+        blocks.push({ span, left, width, first });
+      }
+    }
+    return blocks;
+  }, [state.visualSpans, state.videoSegments, pps]);
 
   /* ── Scrubbing ─────────────────────────────────────────────────────────── */
   const handleRulerPointerDown = useCallback(
@@ -847,6 +876,14 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
           <div className="timeline-header-row">
             <span className="track-badge track-badge--video">V1</span>
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Video</span>
+            {state.visualSpans.length > 0 && (
+              <span
+                style={{ fontSize: 9.5, color: "#7c5cd8", whiteSpace: "nowrap", marginLeft: 4 }}
+                title="Visual copyright flags detected"
+              >
+                ◈ {state.visualSpans.length}
+              </span>
+            )}
           </div>
           {/* Audio header */}
           <div className="timeline-header-row">
@@ -1029,6 +1066,65 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                         dragRef.current = { mode: "end", lane: "video", clipId: seg.id, nextStart: next };
                       }}
                     />
+                  </div>
+                );
+              })}
+              {/* Visual flag overlays — sit on top of video clips */}
+              {visualBlocks.map((block, i) => {
+                const { span, left, width, first } = block;
+                const spared = !span.enabled;
+                return (
+                  <div
+                    key={`${span.id}-${i}`}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left,
+                      width,
+                      height: "100%",
+                      background: spared
+                        ? "rgba(124,92,216,0.12)"
+                        : "rgba(124,92,216,0.28)",
+                      borderLeft: spared ? "2px solid rgba(124,92,216,0.35)" : "2px solid #7c5cd8",
+                      borderRight: spared ? "2px solid rgba(124,92,216,0.35)" : "2px solid #7c5cd8",
+                      boxSizing: "border-box",
+                      zIndex: 4,
+                      pointerEvents: "auto",
+                      cursor: "pointer",
+                    }}
+                    title={`${span.label}${span.signals.length ? ` · ${span.signals[0]}` : ""}${spared ? " (spared)" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const snap = takeSnapshot(state);
+                      update({
+                        ...pushUndo(state, snap),
+                        visualSpans: state.visualSpans.map((s) =>
+                          s.id === span.id ? { ...s, enabled: !s.enabled } : s
+                        ),
+                      });
+                    }}
+                  >
+                    {first && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: "100%",
+                          left: 0,
+                          whiteSpace: "nowrap",
+                          maxWidth: width > 0 ? width : undefined,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          fontSize: 9.5,
+                          fontWeight: 600,
+                          color: "#7c5cd8",
+                          lineHeight: "14px",
+                          pointerEvents: "none",
+                          padding: "0 2px",
+                        }}
+                      >
+                        ◈ {span.label}
+                      </div>
+                    )}
                   </div>
                 );
               })}

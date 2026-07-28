@@ -88,7 +88,7 @@ export function RegionTooltip({ data }: RegionTooltipProps) {
           color: "#9B968A",
         }}
       >
-        Only music detection runs for now; other sources (movies, clips…) aren&rsquo;t scanned yet.
+        Audio flag. Visual footage flags (movies, clips…) appear in purple on the video track.
       </div>
     </div>
   );

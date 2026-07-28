@@ -216,6 +216,20 @@ export const httpRequestDurationSeconds = registry.register(
     [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10])
 );
 
+// ── Visual identify
+export const visualIdentifyRequestsTotal = registry.register(
+  new Counter("visual_identify_requests_total", "Total visual identify requests by outcome")
+);
+export const visualIdentifyCacheHitsTotal = registry.register(
+  new Counter("visual_identify_cache_hits_total", "Visual identify result cache hits")
+);
+export const visualIdentifyCacheMissesTotal = registry.register(
+  new Counter("visual_identify_cache_misses_total", "Visual identify result cache misses")
+);
+export const visualIdentifyUpstreamErrorsTotal = registry.register(
+  new Counter("visual_identify_upstream_errors_total", "Granite Vision upstream errors by code")
+);
+
 // ── Identify
 export const identifyRequestsTotal = registry.register(
   new Counter("identify_requests_total", "Total identify requests by outcome")

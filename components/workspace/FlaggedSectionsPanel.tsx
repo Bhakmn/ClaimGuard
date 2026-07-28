@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback } from "react";
-import type { FlaggedSpan, TrackSegment, ExportStrategy } from "@/lib/types";
+import type { FlaggedSpan, FlaggedVisualSpan, TrackSegment, ExportStrategy } from "@/lib/types";
 import { resolveTimelineAt } from "@/lib/types";
 import { formatClock } from "@/lib/formatters";
 import { takeSnapshot, pushUndo, type WorkspaceState } from "@/lib/workspace-state";
@@ -127,6 +127,62 @@ function RegionRow({
   );
 }
 
+/* ─── Visual region row ──────────────────────────────────────────────────── */
+
+interface VisualRegionRowProps {
+  span: FlaggedVisualSpan;
+  onToggle: () => void;
+  onDelete: () => void;
+}
+
+function VisualRegionRow({ span, onToggle, onDelete }: VisualRegionRowProps) {
+  const startLabel = formatClock(span.start);
+  const endLabel = formatClock(span.end);
+
+  return (
+    <div className="region-row" style={{ borderLeft: "3px solid #7c5cd8" }}>
+      <div className="region-row-timecodes">{startLabel} → {endLabel}</div>
+      <div className="region-row-meta">
+        <div className="region-row-title" style={{ color: "#7c5cd8" }}>
+          ◈ {span.label}
+        </div>
+        {span.signals.length > 0 && (
+          <div className="region-row-subtitle">
+            {span.signals.slice(0, 2).join(" · ")}
+            {span.confidence > 0 ? ` · match ${Math.round(span.confidence)}%` : ""}
+          </div>
+        )}
+        {span.reasoning && (
+          <div className="region-row-subtitle" style={{ fontStyle: "italic", marginTop: 2 }}>
+            {span.reasoning}
+          </div>
+        )}
+      </div>
+      <label
+        className="region-row-toggle"
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        aria-label={`Remove visual flag "${span.label}" from ${startLabel} to ${endLabel}`}
+      >
+        <input
+          type="checkbox"
+          checked={span.enabled}
+          onChange={onToggle}
+          onClick={(e) => e.stopPropagation()}
+        />
+        remove
+      </label>
+      <button
+        className="region-row-delete"
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        aria-label={`Delete visual flag "${span.label}" at ${startLabel}`}
+        type="button"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 /* ─── Panel component ────────────────────────────────────────────────────── */
 
 export function FlaggedSectionsPanel({
@@ -145,12 +201,13 @@ export function FlaggedSectionsPanel({
   );
 
   const hasSpans = state.spans.length > 0;
+  const hasVisualSpans = state.visualSpans.length > 0;
 
   // Visibility gate
-  if (!hasSpans && !edited) return null;
+  if (!hasSpans && !hasVisualSpans && !edited) return null;
 
-  const heading = hasSpans
-    ? `Flagged sections (${state.spans.length})`
+  const heading = hasSpans || hasVisualSpans
+    ? `Flagged sections (${state.spans.length + state.visualSpans.length})`
     : "Edited timeline";
 
   /* ── Callbacks ─────────────────────────────────────────────────────────── */
@@ -202,6 +259,30 @@ export function FlaggedSectionsPanel({
     [state, update]
   );
 
+  const handleVisualToggle = useCallback(
+    (id: string) => {
+      const snap = takeSnapshot(state);
+      update({
+        ...pushUndo(state, snap),
+        visualSpans: state.visualSpans.map((s) =>
+          s.id === id ? { ...s, enabled: !s.enabled } : s
+        ),
+      });
+    },
+    [state, update]
+  );
+
+  const handleVisualDelete = useCallback(
+    (id: string) => {
+      const snap = takeSnapshot(state);
+      update({
+        ...pushUndo(state, snap),
+        visualSpans: state.visualSpans.filter((s) => s.id !== id),
+      });
+    },
+    [state, update]
+  );
+
   /* ── Render ────────────────────────────────────────────────────────────── */
 
   return (
@@ -241,7 +322,7 @@ export function FlaggedSectionsPanel({
         </div>
       </div>
 
-      {/* Region list */}
+      {/* Audio region list */}
       {hasSpans && (
         <div
           style={{
@@ -263,6 +344,34 @@ export function FlaggedSectionsPanel({
               onDelete={() => handleDelete(span.id)}
             />
           ))}
+        </div>
+      )}
+
+      {/* Visual region list */}
+      {hasVisualSpans && (
+        <div style={{ marginTop: hasSpans ? 16 : 14 }}>
+          <div
+            style={{
+              fontSize: 10.5,
+              fontWeight: 700,
+              letterSpacing: "0.06em",
+              color: "#7c5cd8",
+              textTransform: "uppercase",
+              marginBottom: 6,
+            }}
+          >
+            ◈ Visual flags ({state.visualSpans.length})
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {state.visualSpans.map((span) => (
+              <VisualRegionRow
+                key={span.id}
+                span={span}
+                onToggle={() => handleVisualToggle(span.id)}
+                onDelete={() => handleVisualDelete(span.id)}
+              />
+            ))}
+          </div>
         </div>
       )}
 

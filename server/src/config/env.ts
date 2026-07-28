@@ -150,6 +150,21 @@ const RawEnvSchema = z.object({
   IDENTIFY_CACHE_TTL_SECONDS: intEnv(0, 2_592_000).default("604800"),
   IDENTIFY_MAX_SAMPLE_BYTES: intEnv(1, 20_971_520).default("2097152"),
 
+  // ── watsonx / Granite Vision (optional group)
+  WATSONX_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+  WATSONX_PROJECT_ID: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+  WATSONX_MODEL_ID: z.string().default("ibm/granite-3-2-8b-instruct"),
+  WATSONX_URL: z.string().url().default("https://us-south.ml.cloud.ibm.com"),
+  WATSONX_IAM_URL: z.string().url().default("https://iam.cloud.ibm.com"),
+  WATSONX_TIMEOUT_MS: intEnv(5_000, 120_000).default("30000"),
+  WATSONX_MAX_CONCURRENCY: intEnv(1, 32).default("4"),
+
+  // ── Visual identify cache
+  VISUAL_IDENTIFY_CACHE_TTL_SECONDS: intEnv(0, 2_592_000).default("604800"),
+
+  // ── Gemini (Google AI — reserved for future parallel signal)
+  GEMINI_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
+
   // ── TikTok (optional group)
   TIKTOK_CLIENT_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
   TIKTOK_CLIENT_SECRET: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
@@ -208,6 +223,12 @@ const EnvSchema = RawEnvSchema.superRefine((data, ctx) => {
     data,
     ["ACRCLOUD_HOST", "ACRCLOUD_ACCESS_KEY", "ACRCLOUD_ACCESS_SECRET"],
     "ACRCloud",
+    ctx
+  );
+  checkPartialGroup(
+    data,
+    ["WATSONX_API_KEY", "WATSONX_PROJECT_ID"],
+    "watsonx",
     ctx
   );
   checkPartialGroup(data, ["TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET"], "TikTok", ctx);

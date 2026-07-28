@@ -35,6 +35,7 @@ import healthRoutes from "./routes/health.js";
 import sessionRoute from "./routes/session.js";
 import authRoutes from "./routes/auth.js";
 import identifyRoute from "./routes/identify.js";
+import identifyVideoRoute from "./routes/identify-video.js";
 import tiktokRoutes from "./routes/tiktok.js";
 import metricsRoute from "./routes/metrics.js";
 import { applyRateLimit } from "./plugins/rate-limit.js";
@@ -165,6 +166,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await fastify.register(sessionRoute);
   await fastify.register(authRoutes);
   await fastify.register(identifyRoute);
+  await fastify.register(identifyVideoRoute);
   await fastify.register(tiktokRoutes);
   await fastify.register(metricsRoute);
 

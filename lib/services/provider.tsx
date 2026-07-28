@@ -12,10 +12,12 @@ import { parseMockControls, type MockControls } from "../mock/controls";
 import { setControls } from "../mock/delay";
 import { mockMediaService, type MediaService } from "../mock/media-service";
 import { mockScanService, type ScanService } from "../mock/scan-service";
+import { mockVisualScanService, type VisualScanService } from "../mock/vision-scan-service";
 import { mockExportService, type ExportService } from "../mock/export-service";
 import { mockAccountService, type AccountService } from "../mock/account-service";
 import { mockPublishService, type PublishService } from "../mock/publish-service";
 import { realScanService } from "./real/scan-service";
+import { realVisualScanService } from "./real/visual-scan-service";
 import { realAccountService } from "./real/account-service";
 import { realPublishService } from "./real/publish-service";
 import { realExportService } from "./real/export-service";
@@ -66,6 +68,7 @@ async function assertBackendReachable(): Promise<void> {
 export interface Services {
   media: MediaService;
   scan: ScanService;
+  visualScan: VisualScanService;
   export: ExportService;
   account: AccountService;
   publish: PublishService;
@@ -97,20 +100,22 @@ export function ServicesProvider({ children }: { children: ReactNode }) {
         // Throws if backend is down — surfaces an error instead of fake data.
         await assertBackendReachable();
         setServices({
-          media:   mockMediaService,
-          scan:    realScanService,
-          export:  realExportService,
-          account: realAccountService,
-          publish: realPublishService,
+          media:       mockMediaService,
+          scan:        realScanService,
+          visualScan:  realVisualScanService,
+          export:      realExportService,
+          account:     realAccountService,
+          publish:     realPublishService,
           controls,
         });
       } else {
         setServices({
-          media:   mockMediaService,
-          scan:    mockScanService,
-          export:  realExportService,
-          account: mockAccountService,
-          publish: mockPublishService,
+          media:       mockMediaService,
+          scan:        mockScanService,
+          visualScan:  mockVisualScanService,
+          export:      realExportService,
+          account:     mockAccountService,
+          publish:     mockPublishService,
           controls,
         });
       }
