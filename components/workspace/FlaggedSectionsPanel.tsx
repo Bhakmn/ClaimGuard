@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useCallback } from "react";
-import type { FlaggedSpan, FlaggedVisualSpan, TrackSegment, ExportStrategy } from "@/lib/types";
-import { resolveTimelineAt } from "@/lib/types";
+import type { FlaggedSpan, FlaggedVisualSpan, TrackSegment, ExportStrategy, VisualExportStrategy } from "@/lib/types";
+import { resolveTimelineAt, VISUAL_CATEGORY_LABELS } from "@/lib/types";
 import { formatClock } from "@/lib/formatters";
 import { takeSnapshot, pushUndo, type WorkspaceState } from "@/lib/workspace-state";
 import { clipsEdited } from "@/lib/clips-edited";
@@ -138,30 +138,38 @@ interface VisualRegionRowProps {
 function VisualRegionRow({ span, onToggle, onDelete }: VisualRegionRowProps) {
   const startLabel = formatClock(span.start);
   const endLabel = formatClock(span.end);
+  const displayLabel = VISUAL_CATEGORY_LABELS[span.label] ?? span.label;
 
   return (
     <div className="region-row" style={{ borderLeft: "3px solid #7c5cd8" }}>
       <div className="region-row-timecodes">{startLabel} → {endLabel}</div>
       <div className="region-row-meta">
+        {/* Category headline */}
         <div className="region-row-title" style={{ color: "#7c5cd8" }}>
-          ◈ {span.label}
+          ◈ Possible copyright · {displayLabel}
         </div>
+        {/* Confidence + signals */}
         {span.signals.length > 0 && (
           <div className="region-row-subtitle">
             {span.signals.slice(0, 2).join(" · ")}
-            {span.confidence > 0 ? ` · match ${Math.round(span.confidence)}%` : ""}
+            {span.confidence > 0 ? ` · ${Math.round(span.confidence)}% confidence` : ""}
           </div>
         )}
-        {span.reasoning && (
-          <div className="region-row-subtitle" style={{ fontStyle: "italic", marginTop: 2 }}>
+        {/* Model reasoning — human-reviewable, not a legal determination */}
+        {span.reasoning && span.reasoning !== "(inherited from previous frame — scene unchanged)" && (
+          <div className="region-row-subtitle" style={{ fontStyle: "italic", marginTop: 2, color: "#57606a" }}>
             {span.reasoning}
           </div>
         )}
+        {/* Review disclaimer */}
+        <div className="region-row-subtitle" style={{ marginTop: 3, fontSize: 10, color: "#57606a" }}>
+          Candidate for human review — not a legal determination.
+        </div>
       </div>
       <label
         className="region-row-toggle"
         onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        aria-label={`Remove visual flag "${span.label}" from ${startLabel} to ${endLabel}`}
+        aria-label={`Remove visual flag "${displayLabel}" from ${startLabel} to ${endLabel}`}
       >
         <input
           type="checkbox"
@@ -174,7 +182,7 @@ function VisualRegionRow({ span, onToggle, onDelete }: VisualRegionRowProps) {
       <button
         className="region-row-delete"
         onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        aria-label={`Delete visual flag "${span.label}" at ${startLabel}`}
+        aria-label={`Delete visual flag "${displayLabel}" at ${startLabel}`}
         type="button"
       >
         ✕
@@ -215,6 +223,13 @@ export function FlaggedSectionsPanel({
   const handleStrategyChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       update({ exportStrategy: e.target.value as ExportStrategy });
+    },
+    [update]
+  );
+
+  const handleVisualStrategyChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      update({ visualExportStrategy: e.target.value as VisualExportStrategy });
     },
     [update]
   );
@@ -292,23 +307,45 @@ export function FlaggedSectionsPanel({
         <h2 className="flagged-panel-h2">{heading}</h2>
 
         <div className="flagged-header-controls">
-          {/* Strategy select */}
-          <select
-            className="select-field"
-            value={state.exportStrategy}
-            onChange={handleStrategyChange}
-            disabled={state.exporting}
-            title="How to remove the flagged sections"
-            aria-label="Export strategy"
-          >
-            <option value="lossless">
-              Cut: lossless (stream copy, keyframe-aligned)
-            </option>
-            <option value="precise">
-              Cut: precise (re-encode, frame-accurate)
-            </option>
-            <option value="mute">Mute audio only (full length stays)</option>
-          </select>
+          {/* Audio strategy select — shown when there are audio spans or edits */}
+          {(hasSpans || edited) && (
+            <select
+              className="select-field"
+              value={state.exportStrategy}
+              onChange={handleStrategyChange}
+              disabled={state.exporting}
+              title="How to handle flagged audio sections"
+              aria-label="Audio export strategy"
+            >
+              <option value="lossless">
+                Audio: cut lossless (stream copy)
+              </option>
+              <option value="precise">
+                Audio: cut precise (re-encode)
+              </option>
+              <option value="mute">Audio: mute only (keep length)</option>
+            </select>
+          )}
+
+          {/* Visual strategy select — shown when there are visual spans */}
+          {hasVisualSpans && (
+            <select
+              className="select-field"
+              value={state.visualExportStrategy}
+              onChange={handleVisualStrategyChange}
+              disabled={state.exporting}
+              title="How to handle flagged visual sections (muting is not offered — the footage is on-screen regardless)"
+              aria-label="Visual export strategy"
+            >
+              <option value="cut_lossless">
+                Visual: cut lossless (stream copy)
+              </option>
+              <option value="cut_precise">
+                Visual: cut precise (re-encode)
+              </option>
+              <option value="warn_only">Visual: warn only (keep footage)</option>
+            </select>
+          )}
 
           {/* Export button */}
           <button

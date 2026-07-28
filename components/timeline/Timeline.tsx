@@ -19,6 +19,7 @@ import {
   trackEnd,
   resolveSourceAt,
   sortSegments,
+  VISUAL_CATEGORY_LABELS,
 } from "@/lib/types";
 import { formatClock, formatRulerLabel } from "@/lib/formatters";
 import {
@@ -1092,7 +1093,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                       pointerEvents: "auto",
                       cursor: "pointer",
                     }}
-                    title={`${span.label}${span.signals.length ? ` · ${span.signals[0]}` : ""}${spared ? " (spared)" : ""}`}
+                    title={`${VISUAL_CATEGORY_LABELS[span.label] ?? span.label}${span.signals.length ? ` · ${span.signals[0]}` : ""}${spared ? " (spared)" : ""}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       const snap = takeSnapshot(state);
@@ -1122,7 +1123,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                           padding: "0 2px",
                         }}
                       >
-                        ◈ {span.label}
+                        ◈ {VISUAL_CATEGORY_LABELS[span.label] ?? span.label}
                       </div>
                     )}
                   </div>

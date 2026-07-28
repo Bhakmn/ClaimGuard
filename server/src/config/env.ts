@@ -153,7 +153,7 @@ const RawEnvSchema = z.object({
   // ── watsonx / Granite Vision (optional group)
   WATSONX_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
   WATSONX_PROJECT_ID: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
-  WATSONX_MODEL_ID: z.string().default("ibm/granite-3-2-8b-instruct"),
+  WATSONX_MODEL_ID: z.string().default("ibm/granite-vision-3-2-2b"),
   WATSONX_URL: z.string().url().default("https://us-south.ml.cloud.ibm.com"),
   WATSONX_IAM_URL: z.string().url().default("https://iam.cloud.ibm.com"),
   WATSONX_TIMEOUT_MS: intEnv(5_000, 120_000).default("30000"),
@@ -161,9 +161,6 @@ const RawEnvSchema = z.object({
 
   // ── Visual identify cache
   VISUAL_IDENTIFY_CACHE_TTL_SECONDS: intEnv(0, 2_592_000).default("604800"),
-
-  // ── Gemini (Google AI — reserved for future parallel signal)
-  GEMINI_API_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),
 
   // ── TikTok (optional group)
   TIKTOK_CLIENT_KEY: z.string().optional().transform((v) => (v && v.trim().length > 0 ? v.trim() : undefined)),

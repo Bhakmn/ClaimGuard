@@ -3,6 +3,11 @@
  *
  * No backend involvement. Compatible with both the mock and real service
  * branches because export does not depend on any server endpoint.
+ *
+ * Visual removals are applied based on `visualStrategy`:
+ *  - "cut_lossless" / "cut_precise": merged into the combined removal list,
+ *    which removes both video and audio for those ranges.
+ *  - "warn_only": logged but footage is left intact.
  */
 
 import type { TrackSegment, MediaItem, TimeRange } from "@/lib/types";
@@ -175,6 +180,21 @@ export const realExportService: ExportService = {
       throw new Error("Nothing to export: the whole timeline was removed.");
     }
 
+    // ── Merge visual removals into combined removal list ────────────────
+    const visualStrategy = request.visualStrategy ?? "cut_lossless";
+    const effectiveRemovals: TimeRange[] = [...request.removals];
+    if (visualStrategy !== "warn_only" && request.visualRemovals?.length) {
+      effectiveRemovals.push(...request.visualRemovals);
+      onStatus(`Applying ${request.visualRemovals.length} visual flag(s) as cuts…`);
+    } else if (visualStrategy === "warn_only" && request.visualRemovals?.length) {
+      onStatus(
+        `Warning: ${request.visualRemovals.length} visual flag(s) were left intact ` +
+        `(visual strategy = warn only).`
+      );
+    }
+    // Merge and de-duplicate the combined removals
+    const mergedRemovals = mergeRanges(effectiveRemovals, primaryItem.duration);
+
     onStatus("Loading the export engine…");
     const ffmpeg = await getFFmpeg();
 
@@ -186,10 +206,10 @@ export const realExportService: ExportService = {
 
       let blob: Blob;
       if (request.strategy === "mute") {
-        blob = await exportMutedVideo(ffmpeg, inputName, request.removals, onStatus);
+        blob = await exportMutedVideo(ffmpeg, inputName, mergedRemovals, onStatus);
       } else {
         blob = await exportCutVideo(
-          ffmpeg, inputName, request.removals,
+          ffmpeg, inputName, mergedRemovals,
           primaryItem.duration, request.strategy, onStatus
         );
       }
@@ -235,12 +255,22 @@ export const realExportService: ExportService = {
     let muteRangesForAudio: TimeRange[];
 
     if (effectiveStrategy === "mute") {
-      // Keep everything; apply removals as mutes on the audio lane
-      keepIntervals = [{ start: 0, end: total }];
-      muteRangesForAudio = request.removals;
+      // Keep everything; apply audio removals as mutes on the audio lane.
+      // Visual removals still cut (they are on-screen, muting doesn't help).
+      const audioMutes = request.removals;
+      keepIntervals = mergedRemovals.length > 0
+        ? complementRanges(
+            // Cut only the visual removals if present
+            (visualStrategy !== "warn_only" && request.visualRemovals?.length)
+              ? request.visualRemovals
+              : [],
+            total
+          )
+        : [{ start: 0, end: total }];
+      muteRangesForAudio = audioMutes;
     } else {
-      // Cut strategy: remove intervals from both lanes
-      keepIntervals = complementRanges(request.removals, total);
+      // Cut strategy: remove all flagged intervals from both lanes
+      keepIntervals = complementRanges(mergedRemovals, total);
       if (keepIntervals.length === 0) {
         throw new Error("Nothing left to keep: the flagged regions cover the whole video.");
       }

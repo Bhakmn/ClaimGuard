@@ -2,6 +2,7 @@
 
 import React, { useRef, useEffect, useCallback, useState } from "react";
 import type { MediaItem, FlaggedSpan, FlaggedVisualSpan } from "@/lib/types";
+import { VISUAL_CATEGORY_LABELS } from "@/lib/types";
 import type { ElementPool } from "@/hooks/usePlaybackEngine";
 
 interface PlayerProps {
@@ -296,7 +297,7 @@ export function Player({
             }}>
               {audioFlag
                 ? `⚠ ${audioFlag.title || "Copyrighted music"}${audioFlag.artists ? ` · ${audioFlag.artists}` : ""}`
-                : `◈ ${visualFlag!.label}`
+                : `◈ ${VISUAL_CATEGORY_LABELS[visualFlag!.label] ?? visualFlag!.label}`
               }
             </div>
           </div>

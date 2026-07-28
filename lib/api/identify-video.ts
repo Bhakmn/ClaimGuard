@@ -1,11 +1,13 @@
 import { apiFetch } from "./client";
+import type { VisualCategory } from "@/lib/types";
 
 /**
  * The shape of a visual match as returned by POST /api/identify-video.
  * Null means no copyright signal was detected in this frame.
  */
 export type VisualMatch = {
-  label: string;
+  /** Closed taxonomy category — use VISUAL_CATEGORY_LABELS from lib/types for display. */
+  label: VisualCategory;
   signals: string[];
   reasoning: string;
   confidence: number;

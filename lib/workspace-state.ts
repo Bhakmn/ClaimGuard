@@ -4,6 +4,7 @@ import type {
   TrackSegment,
   TrackName,
   ExportStrategy,
+  VisualExportStrategy,
   MediaItem,
 } from "@/lib/types";
 import type { ToastMessage } from "@/components/primitives/Toast";
@@ -57,6 +58,8 @@ export interface WorkspaceState {
 
   /* Export */
   exportStrategy: ExportStrategy;
+  /** How to handle enabled visual flags on export. Never "mute". */
+  visualExportStrategy: VisualExportStrategy;
   exporting: boolean;
   exportResult: { url: string; filename: string } | null;
 
@@ -96,6 +99,7 @@ export const INITIAL_STATE: WorkspaceState = {
   scanStatus: "",
   scanOverlayOpen: false,
   exportStrategy: "lossless",
+  visualExportStrategy: "cut_lossless",
   exporting: false,
   exportResult: null,
   statusLine: "",

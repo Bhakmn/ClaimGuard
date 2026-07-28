@@ -1,4 +1,4 @@
-import type { MediaItem, FlaggedVisualSpan } from "../types";
+import type { MediaItem, FlaggedVisualSpan, VisualCategory } from "../types";
 import { delay, getControls } from "./delay";
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
@@ -25,7 +25,7 @@ export interface VisualScanService {
 interface VisualFixture {
   from: number;
   to: number;
-  label: string;
+  label: VisualCategory;
   signals: string[];
   reasoning: string;
   confidence: number;
@@ -36,7 +36,7 @@ const VISUAL_FIXTURES: VisualFixture[] = [
   {
     from: 0.10,
     to: 0.28,
-    label: "Movie clip",
+    label: "film_or_tv" as VisualCategory,
     signals: [
       "letterbox bars detected (2.39:1 aspect ratio)",
       "cinematic colour grading",
@@ -50,7 +50,7 @@ const VISUAL_FIXTURES: VisualFixture[] = [
   {
     from: 0.52,
     to: 0.67,
-    label: "Screen recording",
+    label: "screen_recording" as VisualCategory,
     signals: [
       "phone chrome / status bar visible",
       "OS UI elements in top-left corner",

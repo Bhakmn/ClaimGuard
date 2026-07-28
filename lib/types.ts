@@ -55,13 +55,42 @@ export interface FlaggedSpan {
  * `reasoning` — full model explanation when available (may be empty string).
  * `source`    — which detection path produced the flag.
  */
+/**
+ * Closed taxonomy of visual copyright categories.
+ * Must stay in sync with VisualCategory in server/src/services/vision.ts and
+ * CATEGORY_LABELS in the same file.
+ */
+export type VisualCategory =
+  | "film_or_tv"
+  | "sports_broadcast"
+  | "news_broadcast"
+  | "music_video"
+  | "video_game"
+  | "screen_recording"
+  | "social_media_repost"
+  | "advertisement"
+  | "other_third_party";
+
+/** Human-readable display labels for the closed taxonomy (client-side copy). */
+export const VISUAL_CATEGORY_LABELS: Record<VisualCategory, string> = {
+  film_or_tv:           "Film or TV clip",
+  sports_broadcast:     "Sports broadcast",
+  news_broadcast:       "News broadcast",
+  music_video:          "Music video",
+  video_game:           "Video game footage",
+  screen_recording:     "Screen recording",
+  social_media_repost:  "Social-media repost",
+  advertisement:        "Advertisement",
+  other_third_party:    "Other third-party footage",
+};
+
 export interface FlaggedVisualSpan {
   id: string;
   mediaId: string;
   start: number;          // seconds into the source media
   end: number;            // seconds into the source media
-  /** Short label shown in the UI, e.g. "Third-party footage". */
-  label: string;
+  /** Closed taxonomy category — use VISUAL_CATEGORY_LABELS for display. */
+  label: VisualCategory;
   signals: string[];
   reasoning: string;
   confidence: number;     // 0–100
@@ -84,6 +113,16 @@ export interface TrackSegment {
 export type TrackName = "video" | "audio";
 
 export type ExportStrategy = "lossless" | "precise" | "mute";
+
+/**
+ * How to handle flagged visual regions on export.
+ * "cut_lossless" and "cut_precise" both remove the video (and audio) for the
+ * flagged time range.  "blur" will be a future ffmpeg overlay filter.
+ * "warn_only" leaves the video untouched but was flagged — visible in export log.
+ * Muting is NOT offered for visual flags: the visual signal remains on screen
+ * regardless of whether the audio track is silenced.
+ */
+export type VisualExportStrategy = "cut_lossless" | "cut_precise" | "warn_only";
 
 export interface AccountProfile {
   name?: string;

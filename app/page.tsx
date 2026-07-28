@@ -693,6 +693,7 @@ function WorkspaceInner() {
       const result = await services.export.render(
         {
           strategy: currentState.exportStrategy,
+          visualStrategy: currentState.visualExportStrategy,
           items: currentState.items,
           videoSegments: currentState.videoSegments,
           audioSegments: currentState.audioSegments,

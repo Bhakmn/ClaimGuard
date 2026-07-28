@@ -1,5 +1,5 @@
 /**
- * Vision service client — Granite Vision via watsonx.ai.
+ * Vision service client — Granite Vision 3.2 2B via watsonx.ai.
  *
  * Responsibilities:
  *  1. Heuristic pre-pass: fast, free, no API key needed — analyses raw pixel
@@ -7,9 +7,9 @@
  *     anomalies, and overly-uniform-black border regions.  Returns a partial
  *     VisualMatch when heuristics alone are confident enough (score ≥ threshold).
  *  2. Granite Vision pass (watsonx.ai): sends the frame as a base64 image to
- *     IBM's multimodal foundation model with a structured prompt asking it to
- *     identify visual signals of third-party footage.  Runs when WATSONX_API_KEY
- *     and WATSONX_PROJECT_ID are present.
+ *     ibm/granite-vision-3-2-2b with a structured prompt asking it to identify
+ *     visual signals of third-party footage.  Runs when WATSONX_API_KEY and
+ *     WATSONX_PROJECT_ID are present.
  *  3. The two signals are combined: the heuristic result populates `signals[]`,
  *     the Granite Vision reasoning populates `reasoning`.  If only heuristics
  *     fire, `source` = "heuristic"; if Granite Vision confirms, `source` =
@@ -20,20 +20,23 @@
  *     - One retry on transport failures before giving up.
  *     - ConfigurationError thrown when credentials are absent (enables
  *       heuristic-only fallback in the route).
+ *  5. IAM bearer token is cached in module scope with a 50-minute TTL and a
+ *     refresh-on-401 path — one round-trip per token lifetime, not per frame.
+ *
+ * Model note:
+ *   The configured model MUST be a vision-capable checkpoint that accepts the
+ *   /ml/v1/text/chat multipart image_url format.  On watsonx.ai this is
+ *   ibm/granite-vision-3-2-2b (the default).  If a text-only model ID is
+ *   configured, a loud warning is emitted at the first call and the response
+ *   will be empty / garbage — the model cannot see images.
  *
  * Note on ACRCloud Video:
  *   ACRCloud does offer a Broadcast Monitoring / Video Fingerprinting product,
  *   but it is an enterprise licence product requiring a custom contract and is
  *   not publicly API-accessible on standard ACRCloud plans.  It is therefore
- *   NOT wired in here — see docs/video-copyright-detection.md §Fingerprint for
- *   the full assessment.  The heuristic + Granite Vision dual-signal approach
- *   is the implemented path.
- *
- * Gemini note:
- *   GEMINI_API_KEY is also available in the environment (see .env.example).
- *   This service uses the IBM watsonx/Granite Vision path as the primary model
- *   per the IBM-platform requirement.  The Gemini key is reserved for future
- *   use or a parallel signal if IBM model quality proves insufficient.
+ *   NOT wired in here — see docs/video-copyright-detection.md §3 for the full
+ *   assessment.  The heuristic + Granite Vision dual-signal approach is the
+ *   implemented path.
  */
 
 import crypto from "node:crypto";
@@ -48,8 +51,52 @@ import { IDENTIFY_SEMAPHORE_WAIT_MS } from "../config/constants.js";
 
 /* ── Response shapes ─────────────────────────────────────────────────────── */
 
+/**
+ * Closed category enum for visual copyright signals.
+ * The model is constrained to pick exactly one of these values so that
+ * consecutive frames of the same clip produce identical label strings and
+ * merge into one span.  Free-text reasoning is kept separately in `reasoning`.
+ */
+export type VisualCategory =
+  | "film_or_tv"
+  | "sports_broadcast"
+  | "news_broadcast"
+  | "music_video"
+  | "video_game"
+  | "screen_recording"
+  | "social_media_repost"
+  | "advertisement"
+  | "other_third_party";
+
+/** All valid category values as a Set for O(1) validation. */
+const VALID_CATEGORIES = new Set<string>([
+  "film_or_tv",
+  "sports_broadcast",
+  "news_broadcast",
+  "music_video",
+  "video_game",
+  "screen_recording",
+  "social_media_repost",
+  "advertisement",
+  "other_third_party",
+]);
+
+/** Human-readable display labels for the closed taxonomy. */
+export const CATEGORY_LABELS: Record<VisualCategory, string> = {
+  film_or_tv:           "Film or TV clip",
+  sports_broadcast:     "Sports broadcast",
+  news_broadcast:       "News broadcast",
+  music_video:          "Music video",
+  video_game:           "Video game footage",
+  screen_recording:     "Screen recording",
+  social_media_repost:  "Social-media repost",
+  advertisement:        "Advertisement",
+  other_third_party:    "Other third-party footage",
+};
+
 export interface VisualMatch {
-  label: string;
+  /** Closed-taxonomy category — use CATEGORY_LABELS for display. */
+  label: VisualCategory;
   signals: string[];
   reasoning: string;
   confidence: number;       // 0–100
@@ -87,6 +134,8 @@ export function _setSemaphoreForTest(s: Semaphore): void {
 export function _resetForTest(): void {
   _semaphore = null;
   _resetCircuitBreaker();
+  _clearIamTokenCache();
+  _resetModelValidation();
 }
 
 /* ── Circuit breaker (identical pattern to acrcloud.ts) ──────────────────── */
@@ -218,7 +267,7 @@ export function heuristicAnalyse(
   if (signals.length === 0) return null;
 
   return {
-    label: "Possible third-party footage",
+    label: "other_third_party" as VisualCategory,
     signals,
     reasoning: "",
     confidence: Math.min(55, 30 + signals.length * 12),
@@ -226,55 +275,42 @@ export function heuristicAnalyse(
   };
 }
 
-/* ── Granite Vision via watsonx.ai ───────────────────────────────────────── */
+/* ── IAM token cache ─────────────────────────────────────────────────────── */
 
 /**
- * Structured prompt sent to Granite Vision.
- * Asks the model to act as a copyright-risk detector, not a general describer.
- * Output is expected as JSON matching GraniteVisionOutput.
+ * Module-level IAM token cache.
+ *
+ * A single token is valid for ~3600 seconds.  We cache it for 50 minutes
+ * (3000 s) to ensure we never serve a token that is about to expire.  On a
+ * 401 from watsonx the cached token is cleared and a fresh one is fetched.
  */
-const VISION_PROMPT = `You are a copyright-risk analyser for a video editing tool.
-
-Examine this video frame and determine whether it looks like inserted third-party footage — i.e., content the video creator did not film themselves, such as a movie clip, TV episode segment, broadcast footage, game footage, screen recording, or someone else's published video.
-
-Respond ONLY with a valid JSON object (no markdown fences) matching this schema:
-{
-  "is_third_party": boolean,
-  "confidence": number,        // 0–100
-  "label": string,             // short label, e.g. "Movie clip" or "Screen recording"
-  "signals": string[],         // list of specific visual clues, max 5 items
-  "reasoning": string          // one or two sentences of explanation
+interface IamTokenEntry {
+  token: string;
+  expiresAt: number;   // Date.now() ms
 }
 
-Be conservative: only flag when there is clear visual evidence. A confidence below 40 should result in is_third_party = false.`;
+let _iamTokenCache: IamTokenEntry | null = null;
 
-interface GraniteVisionOutput {
-  is_third_party: boolean;
-  confidence: number;
-  label: string;
-  signals: string[];
-  reasoning: string;
+/** Visible for testing — clear the cached IAM token. */
+export function _clearIamTokenCache(): void {
+  _iamTokenCache = null;
 }
 
-/**
- * Call watsonx.ai Granite Vision once.
- * Throws AppError on transport failure (tagged _retriable) or bad response.
- */
-async function callGraniteVisionOnce(
+const IAM_TOKEN_TTL_MS = 50 * 60 * 1000;   // 50 minutes
+
+async function fetchIamToken(
   apiKey: string,
-  projectId: string,
-  modelId: string,
   iamTokenUrl: string,
-  watsonxUrl: string,
-  timeoutMs: number,
-  frameBuffer: Buffer,
-  log?: VisionLogger
-): Promise<VisualIdentifyResult> {
-  // ── 1. Exchange API key for IAM bearer token ────────────────────────────
+  forceRefresh = false
+): Promise<string> {
+  if (!forceRefresh && _iamTokenCache && Date.now() < _iamTokenCache.expiresAt) {
+    return _iamTokenCache.token;
+  }
+
   const tokenController = new AbortController();
   const tokenTimer = setTimeout(() => tokenController.abort(), 10_000);
-  let iamToken: string;
 
+  let iamToken: string;
   try {
     const tokenRes = await fetch(`${iamTokenUrl}/identity/token`, {
       method: "POST",
@@ -308,6 +344,100 @@ async function callGraniteVisionOnce(
     );
   }
 
+  _iamTokenCache = { token: iamToken, expiresAt: Date.now() + IAM_TOKEN_TTL_MS };
+  return iamToken;
+}
+
+/* ── Model validation ────────────────────────────────────────────────────── */
+
+/** Known text-only Granite models that do NOT support image inputs. */
+const TEXT_ONLY_MODEL_PATTERNS = [
+  /granite-3(?!.*vision)/i,
+  /granite-guardian/i,
+  /granite-code/i,
+  /llama/i,
+  /mistral/i,
+];
+
+let _modelValidationDone = false;
+
+function warnIfTextOnlyModel(modelId: string, log?: VisionLogger): void {
+  if (_modelValidationDone) return;
+  _modelValidationDone = true;
+  const isLikelyTextOnly = TEXT_ONLY_MODEL_PATTERNS.some((re) => re.test(modelId));
+  if (isLikelyTextOnly) {
+    const msg =
+      `[ClaimGuard WARNING] WATSONX_MODEL_ID="${modelId}" appears to be a text-only ` +
+      `model and cannot process image inputs.  Visual copyright detection will ` +
+      `silently return garbage results.  Set WATSONX_MODEL_ID=ibm/granite-vision-3-2-2b ` +
+      `in your .env file to use a vision-capable model.`;
+    // Always emit to process.stderr regardless of log level so it can't be missed.
+    process.stderr.write(msg + "\n");
+    log?.warn({ modelId }, "[vision] configured model is likely text-only — image inputs will fail");
+  }
+}
+
+/** Visible for testing — reset model validation state. */
+export function _resetModelValidation(): void {
+  _modelValidationDone = false;
+}
+
+/* ── Granite Vision via watsonx.ai ───────────────────────────────────────── */
+
+/**
+ * Structured prompt sent to Granite Vision.
+ * Constrains the model to a closed category taxonomy so that consecutive frames
+ * of the same clip produce identical `category` strings and merge cleanly.
+ * Free-text reasoning is preserved in `reasoning` for human review.
+ */
+const VISION_PROMPT = `You are a copyright-risk analyser for a video editing tool.
+
+Examine this video frame and determine whether it contains third-party footage — content the video creator did not film themselves.
+
+If it IS third-party footage, pick EXACTLY ONE category from this list:
+  film_or_tv | sports_broadcast | news_broadcast | music_video | video_game | screen_recording | social_media_repost | advertisement | other_third_party
+
+Respond ONLY with a valid JSON object (no markdown fences) matching this schema:
+{
+  "is_third_party": boolean,
+  "confidence": number,        // 0–100
+  "category": string,          // one value from the list above, or "" if not third-party
+  "signals": string[],         // specific visual clues, max 5 items
+  "reasoning": string          // one or two sentences explaining the decision
+}
+
+Be conservative: only flag when there is clear visual evidence. A confidence below 40 means is_third_party should be false.`;
+
+interface GraniteVisionOutput {
+  is_third_party: boolean;
+  confidence: number;
+  category: string;
+  signals: string[];
+  reasoning: string;
+}
+
+/**
+ * Call watsonx.ai Granite Vision once.
+ *
+ * Uses the module-level IAM token cache.  On a 401 response the cache is
+ * cleared and the token is re-fetched exactly once before re-attempting the
+ * inference call.
+ *
+ * Throws AppError on transport failure (tagged _retriable) or bad response.
+ */
+async function callGraniteVisionOnce(
+  apiKey: string,
+  projectId: string,
+  modelId: string,
+  iamTokenUrl: string,
+  watsonxUrl: string,
+  timeoutMs: number,
+  frameBuffer: Buffer,
+  log?: VisionLogger
+): Promise<VisualIdentifyResult> {
+  // ── 1. Obtain IAM bearer token (cached, ~50 min TTL) ────────────────────
+  const iamToken = await fetchIamToken(apiKey, iamTokenUrl);
+
   // ── 2. Build request payload ────────────────────────────────────────────
   const base64Frame = frameBuffer.toString("base64");
   const payload = {
@@ -318,7 +448,10 @@ async function callGraniteVisionOnce(
         role: "user",
         content: [
           { type: "text", text: VISION_PROMPT },
-          { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Frame}` } },
+          {
+            type: "image_url",
+            image_url: { url: `data:image/jpeg;base64,${base64Frame}` },
+          },
         ],
       },
     ],
@@ -376,6 +509,16 @@ async function callGraniteVisionOnce(
 
   const durationMs = Date.now() - start;
 
+  // ── 3a. Token expired mid-flight — clear cache and surface as retriable ─
+  if (statusCode === 401) {
+    _clearIamTokenCache();
+    log?.warn({ durationMs }, "watsonx returned 401 — IAM token cache cleared, will retry");
+    throw Object.assign(
+      new AppError(502, "watsonx_auth_failed", "watsonx bearer token was rejected (401). Retrying with a fresh token."),
+      { _retriable: true }
+    );
+  }
+
   if (statusCode === 429) {
     log?.warn({ durationMs, statusCode }, "watsonx rate-limited this server");
     throw new AppError(429, "rate_limited",
@@ -408,7 +551,12 @@ async function callGraniteVisionOnce(
   }
 
   log?.debug(
-    { durationMs, statusCode, confidence: visionOutput.confidence, isThirdParty: visionOutput.is_third_party },
+    {
+      durationMs, statusCode,
+      confidence: visionOutput.confidence,
+      isThirdParty: visionOutput.is_third_party,
+      category: visionOutput.category,
+    },
     "Granite Vision identify call"
   );
 
@@ -416,9 +564,17 @@ async function callGraniteVisionOnce(
     return { match: null };
   }
 
+  // ── 5. Validate category against the closed taxonomy ───────────────────
+  const rawCategory = typeof visionOutput.category === "string"
+    ? visionOutput.category.trim()
+    : "";
+  const category: VisualCategory = VALID_CATEGORIES.has(rawCategory)
+    ? (rawCategory as VisualCategory)
+    : "other_third_party";
+
   return {
     match: {
-      label: typeof visionOutput.label === "string" ? visionOutput.label : "Possible third-party footage",
+      label: category,
       signals: Array.isArray(visionOutput.signals) ? visionOutput.signals.slice(0, 5) : [],
       reasoning: typeof visionOutput.reasoning === "string" ? visionOutput.reasoning : "",
       confidence: Math.min(100, Math.max(0, Number(visionOutput.confidence) || 0)),
@@ -461,6 +617,11 @@ export async function identifyFrame(
   const watsonxEnabled =
     Boolean(cfg.WATSONX_API_KEY) &&
     Boolean(cfg.WATSONX_PROJECT_ID);
+
+  // Warn once on first call if the configured model cannot accept images.
+  if (watsonxEnabled) {
+    warnIfTextOnlyModel(cfg.WATSONX_MODEL_ID, log);
+  }
 
   // No model configured — return heuristic result (or null) immediately.
   if (!watsonxEnabled) {

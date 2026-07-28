@@ -1,4 +1,4 @@
-import type { TrackSegment, ExportStrategy, MediaItem, TimeRange, FlaggedVisualSpan } from "../types";
+import type { TrackSegment, ExportStrategy, VisualExportStrategy, MediaItem, TimeRange, FlaggedVisualSpan } from "../types";
 import { complementRanges } from "../intervals";
 import { trackEnd, segmentDuration } from "../types";
 import { delay, getControls } from "./delay";
@@ -9,8 +9,16 @@ export interface ExportRequest {
   videoSegments: TrackSegment[];
   audioSegments: TrackSegment[];
   removals: TimeRange[];
-  /** Visual flagged spans — used when strategy includes video-region handling. */
+  /**
+   * Visual region removals.  Combined with `removals` for cut strategies.
+   * Ignored when `visualStrategy` is "warn_only".
+   */
   visualRemovals?: TimeRange[];
+  /**
+   * How to handle visual flags.  Defaults to "cut_lossless" when omitted.
+   * "warn_only" logs a warning but leaves the footage intact.
+   */
+  visualStrategy?: VisualExportStrategy;
   primaryId: string;
 }
 
