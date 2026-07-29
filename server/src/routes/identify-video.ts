@@ -152,7 +152,7 @@ const identifyVideoRoute: FastifyPluginAsync = async (fastify) => {
       // ── 5. Cache read ────────────────────────────────────────────────────
       const cacheTtl = cfg.VISUAL_IDENTIFY_CACHE_TTL_SECONDS;
       if (cacheTtl > 0 && cfg.dbEnabled) {
-        const cached = await getVisualCachedResult(getDb(), digestBuffer);
+        const cached = await getVisualCachedResult(getDb(), digestBuffer, request.log);
         if (cached) {
           const ageSeconds = Math.floor(
             (Date.now() - new Date(cached.created_at).getTime()) / 1_000
@@ -189,7 +189,11 @@ const identifyVideoRoute: FastifyPluginAsync = async (fastify) => {
       }
 
       // ── 7. Cache write (fire-and-forget) ─────────────────────────────────
-      if (cacheTtl > 0 && cfg.dbEnabled) {
+      // Skip the cache write entirely when the model returned a response we
+      // could not parse — a parse failure is not a verdict and must never be
+      // stored.  The next scan will re-examine the frame and hopefully get a
+      // valid response.
+      if (cacheTtl > 0 && cfg.dbEnabled && !result.parseFailure) {
         const source = result.match?.source ?? "heuristic";
         writeVisualCachedResult(getDb(), {
           digestBuffer,

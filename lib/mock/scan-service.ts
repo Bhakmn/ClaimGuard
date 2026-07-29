@@ -23,6 +23,11 @@ export interface ScanService {
     request: ScanRequest,
     onProgress: (p: ScanProgress) => void
   ): Promise<FlaggedSpan[]>;
+  /**
+   * Abort any in-flight scan immediately.  Safe to call when nothing is
+   * running.  The pending scan() promise will reject with an AbortError.
+   */
+  cancel(): void;
 }
 
 /* ─── Fixture flags ──────────────────────────────────────────────────────── */
@@ -85,6 +90,7 @@ export function nextId(): string {
 /* ─── Mock implementation ────────────────────────────────────────────────── */
 
 export const mockScanService: ScanService = {
+  cancel() { /* mock resolves quickly; no abort needed */ },
   async scan(request, onProgress) {
     const controls = getControls();
 

@@ -147,7 +147,7 @@ const identifyRoute: FastifyPluginAsync = async (fastify) => {
 
       // ── 6. Cache read ────────────────────────────────────────────────────
       if (cfg.IDENTIFY_CACHE_TTL_SECONDS > 0) {
-        const cached = await getCachedResult(getDb(), digestBuffer);
+        const cached = await getCachedResult(getDb(), digestBuffer, request.log);
         if (cached) {
           const ageSeconds = Math.floor(
             (Date.now() - new Date(cached.created_at).getTime()) / 1_000

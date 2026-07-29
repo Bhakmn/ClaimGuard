@@ -168,6 +168,9 @@ let activeScanController: AbortController | null = null;
 /* ─── Real scan service ──────────────────────────────────────────────────── */
 
 export const realScanService: ScanService = {
+  cancel() {
+    activeScanController?.abort();
+  },
   async scan(request: ScanRequest, onProgress: (p: ScanProgress) => void): Promise<FlaggedSpan[]> {
     // Cancel any in-flight scan before starting a new one.
     if (activeScanController) {

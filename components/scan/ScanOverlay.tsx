@@ -16,11 +16,23 @@ import type { FlaggedSpan } from "@/lib/types";
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 
 export interface ScanOverlayProps {
+  /** True while the audio scan is running. */
   scanning: boolean;
+  /** True while the visual scan is running. Wheel holds card 3 until false. */
+  visualScanning: boolean;
   scanFailed: boolean;
   failureMessage: string | null;
+  /**
+   * Effective stage index for the wheel (0–3 while audio runs, stays at 3
+   * while visual runs, advances to 4 only when both are done).
+   */
   scanStage: number;
+  /**
+   * Combined progress fraction (0–1) for the front card's bar.
+   * Caller derives: audio fraction while audio runs, visual fraction after.
+   */
   scanFraction: number;
+  /** Live status line for the front card. */
   scanStatus: string;
   scanStartMs: number | null;
   primaryFileName: string;
@@ -42,6 +54,7 @@ export function ScanOverlay({
   scanStatus,
   scanStartMs,
   primaryFileName,
+  visualScanning,
   onRetry,
   onContinue,
   onClose,
@@ -75,8 +88,17 @@ export function ScanOverlay({
 
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        // Escape does nothing while scanning; on failure card it continues
-        if (scanFailed) onContinue();
+        // Escape is always an exit hatch.
+        //
+        // While scanning: calling onContinue dismisses the overlay and leaves
+        // the workspace in its pre-scan state.  The scan is already running
+        // server-side and cannot be cancelled from here; "dismiss" and
+        // "continue without scan results" are therefore equivalent — onContinue
+        // is the right call because it closes the overlay cleanly without
+        // marking the scan as failed, so the user lands back in the editor.
+        //
+        // On failure card: same behaviour — dismiss without retrying.
+        onContinue();
         return;
       }
       if (e.key !== "Tab") return;
@@ -100,11 +122,12 @@ export function ScanOverlay({
 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [scanFailed, onContinue]);
+  }, [onContinue]);
 
   // Wheel engine
-  const [wheelState, { reset }] = useWheelEngine({
+  const [wheelState, { reset, onFillComplete }] = useWheelEngine({
     scanning,
+    visualScanning,
     scanStage,
     scanFailed,
     onClose,
@@ -120,22 +143,29 @@ export function ScanOverlay({
     prevScanning.current = scanning;
   }, [scanning, reset]);
 
-  // Determine per-card status
+  // Determine per-card status.
+  // A card at the front is always "running" — the wheel (not the backend
+  // scanning flag) is the authority on when it finishes.  The sweep
+  // transitions it to "done" only after its fill has completed.
   function getStatus(cardIndex: number): CardStatus {
     const { frontIndex, hiddenSet, sweeping, sweepQueue } = wheelState;
     if (scanFailed && cardIndex === frontIndex) return "failed";
     if (hiddenSet.has(cardIndex)) return "done";
     // sweeping-out card
     if (sweeping && sweepQueue[0] === cardIndex) return "done";
-    if (cardIndex === frontIndex) {
-      return scanning || sweeping ? "running" : "done";
-    }
+    if (cardIndex === frontIndex) return "running";
     if (cardIndex < frontIndex) return "done";
     return "pending";
   }
 
-  // Derived: active stage index for sidebar (4 when scan finished)
-  const activeStageSidebar = scanning ? scanStage : 4;
+  // Derived: active stage index for sidebar.
+  // A card is visually "done" the moment its sweep animation starts (getStatus
+  // returns "done" for the sweeping card too).  We count both hidden cards AND
+  // the currently-sweeping card so the sidebar checkmark fires in exact sync
+  // with the card on screen — not one full wheel-rotation later.
+  const activeStageSidebar =
+    wheelState.hiddenSet.size +
+    (wheelState.sweeping && wheelState.sweepQueue.length > 0 ? 1 : 0);
 
   return (
     <div
@@ -150,7 +180,7 @@ export function ScanOverlay({
         stages={STAGES}
         activeStage={activeStageSidebar}
         failed={scanFailed}
-        scanning={scanning}
+        scanning={scanning || visualScanning}
         scanStartMs={scanStartMs}
         fileName={primaryFileName}
         headingRef={headingRef as React.RefObject<HTMLHeadingElement>}
@@ -188,12 +218,10 @@ export function ScanOverlay({
                   <StageCard
                     def={def}
                     status={status}
-                    percentage={
-                      def.index === 3 && status === "running"
-                        ? Math.round(scanFraction * 100)
-                        : undefined
-                    }
-                    indeterminate={status === "running" && def.index !== 3}
+                    isActive={status === "running" && def.index === wheelState.frontIndex && !wheelState.sweeping}
+                    realFraction={def.index === 3 ? scanFraction : 0}
+                    onFillComplete={onFillComplete}
+                    indeterminate={false}
                     liveStatus={scanStatus}
                     failureMessage={failureMessage ?? undefined}
                     onRetry={onRetry}
@@ -262,14 +290,10 @@ export function ScanOverlay({
                       <StageCard
                         def={def}
                         status={status}
-                        percentage={
-                          def.index === 3 && status === "running"
-                            ? Math.round(scanFraction * 100)
-                            : undefined
-                        }
-                        indeterminate={
-                          status === "running" && def.index !== 3
-                        }
+                        isActive={status === "running" && def.index === wheelState.frontIndex && !wheelState.sweeping}
+                        realFraction={def.index === 3 ? scanFraction : 0}
+                        onFillComplete={onFillComplete}
+                        indeterminate={false}
                         liveStatus={scanStatus}
                         failureMessage={failureMessage ?? undefined}
                         onRetry={onRetry}

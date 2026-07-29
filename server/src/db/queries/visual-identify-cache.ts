@@ -33,22 +33,40 @@ export interface VisualMatch {
   source: "heuristic" | "granite_vision";
 }
 
+/* ── Minimal logger interface (avoids importing Fastify types here) ───────── */
+
+export interface VisualCacheLogger {
+  warn: (obj: object, msg: string) => void;
+}
+
 /* ── Queries ──────────────────────────────────────────────────────────────── */
 
 export async function getVisualCachedResult(
   db: SupabaseClient,
-  digestBuffer: Buffer
+  digestBuffer: Buffer,
+  log?: VisualCacheLogger
 ): Promise<VisualCacheRow | null> {
   const digestHex = bufToHex(digestBuffer);
 
-  const { data, error } = await db
-    .from("visual_identify_cache")
-    .select("*")
-    .eq("frame_sha256", digestHex)
-    .gt("expires_at", new Date().toISOString())
-    .maybeSingle();
+  let data: unknown;
+  try {
+    const result = await db
+      .from("visual_identify_cache")
+      .select("*")
+      .eq("frame_sha256", digestHex)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (result.error) {
+      // Cache is an optimisation — treat any DB error as a miss, not a 500.
+      log?.warn({ err: result.error }, "[visual-identify-cache] read error (treating as miss)");
+      return null;
+    }
+    data = result.data;
+  } catch (err) {
+    log?.warn({ err }, "[visual-identify-cache] read exception (treating as miss)");
+    return null;
+  }
 
-  if (error) throw error;
   if (!data) return null;
 
   const row = data as VisualCacheRow;

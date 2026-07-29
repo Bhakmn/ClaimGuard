@@ -35,6 +35,12 @@ export interface IdentifyMatch {
   playOffsetMs?: number;
 }
 
+/* ── Minimal logger interface (avoids importing Fastify types here) ───────── */
+
+export interface CacheLogger {
+  warn: (obj: object, msg: string) => void;
+}
+
 /* ── Queries ─────────────────────────────────────────────────────────────── */
 
 /**
@@ -44,21 +50,36 @@ export interface IdentifyMatch {
  *
  * Returns null on a miss or when the row has expired.
  * Increments hit_count and updates last_hit_at on a hit (fire-and-forget).
+ *
+ * Pass the request logger as `log` so cache errors appear in the structured
+ * log with request-id context instead of going to raw console.warn.
  */
 export async function getCachedResult(
   db: SupabaseClient,
-  digestBuffer: Buffer
+  digestBuffer: Buffer,
+  log?: CacheLogger
 ): Promise<IdentifyCacheRow | null> {
   const digestHex = bufToHex(digestBuffer);
 
-  const { data, error } = await db
-    .from("identify_cache")
-    .select("*")
-    .eq("sample_sha256", digestHex)
-    .gt("expires_at", new Date().toISOString())
-    .maybeSingle();
+  let data: unknown;
+  try {
+    const result = await db
+      .from("identify_cache")
+      .select("*")
+      .eq("sample_sha256", digestHex)
+      .gt("expires_at", new Date().toISOString())
+      .maybeSingle();
+    if (result.error) {
+      // Cache is an optimisation — treat any DB error as a miss, not a 500.
+      log?.warn({ err: result.error }, "[identify-cache] read error (treating as miss)");
+      return null;
+    }
+    data = result.data;
+  } catch (err) {
+    log?.warn({ err }, "[identify-cache] read exception (treating as miss)");
+    return null;
+  }
 
-  if (error) throw error;
   if (!data) return null;
 
   const row = data as IdentifyCacheRow;

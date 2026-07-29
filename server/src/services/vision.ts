@@ -105,6 +105,12 @@ export interface VisualMatch {
 
 export interface VisualIdentifyResult {
   match: VisualMatch | null;
+  /**
+   * True when the model returned a response that could not be parsed into the
+   * expected schema.  A parse failure is NOT a clean negative verdict — the
+   * frame was not examined successfully.  Callers MUST NOT cache this result.
+   */
+  parseFailure?: true;
 }
 
 /* ── Logger interface (mirrors acrcloud.ts) ──────────────────────────────── */
@@ -397,7 +403,9 @@ Examine this video frame and determine whether it contains third-party footage �
 If it IS third-party footage, pick EXACTLY ONE category from this list:
   film_or_tv | sports_broadcast | news_broadcast | music_video | video_game | screen_recording | social_media_repost | advertisement | other_third_party
 
-Respond ONLY with a valid JSON object (no markdown fences) matching this schema:
+You MUST respond with ONLY a single JSON object — no markdown, no code fences, no explanation before or after. Start your response with { and end it with }. Any other format will be rejected.
+
+The JSON object MUST have exactly these five fields:
 {
   "is_third_party": boolean,
   "confidence": number,        // 0–100
@@ -414,6 +422,41 @@ interface GraniteVisionOutput {
   category: string;
   signals: string[];
   reasoning: string;
+}
+
+/**
+ * Locate the first complete JSON object in `text` by scanning for a matching
+ * { … } pair, tolerating leading prose, markdown fences, trailing remarks, and
+ * stray whitespace.  Returns the extracted substring or null if none is found.
+ *
+ * This makes the parser robust to how small models actually behave: they often
+ * add a preamble ("Here is the JSON:"), a trailing sentence, or wrap the object
+ * in a markdown fence even when explicitly told not to.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+
+    if (ch === "{") { depth++; continue; }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+
+  return null; // no balanced closing brace found
 }
 
 /**
@@ -541,28 +584,63 @@ async function callGraniteVisionOnce(
   const content = parsed?.choices?.[0]?.message?.content ?? "";
   let visionOutput: GraniteVisionOutput;
 
-  try {
-    // Strip any accidental markdown fences
-    const cleaned = content.replace(/^```[a-z]*\n?/i, "").replace(/\n?```$/,"");
-    visionOutput = JSON.parse(cleaned) as GraniteVisionOutput;
-  } catch {
-    log?.warn({ durationMs }, "Granite Vision JSON parse failed — treating as no match");
-    return { match: null };
+  // ── Extract the JSON object from the model's content ───────────────────
+  // Small models often add prose, markdown fences, or trailing remarks
+  // regardless of the prompt instruction.  Rather than demanding the response
+  // be exactly the object, locate the first complete JSON object anywhere in
+  // the text by scanning for the outermost { … } pair.
+  const extracted = extractFirstJsonObject(content);
+  if (extracted === null) {
+    log?.warn(
+      { durationMs, rawContent: content.slice(0, 500) },
+      "Granite Vision JSON parse failed — no JSON object found in response (parse failure, result not cached)"
+    );
+    return { match: null, parseFailure: true };
   }
 
-  log?.debug(
-    {
-      durationMs, statusCode,
-      confidence: visionOutput.confidence,
-      isThirdParty: visionOutput.is_third_party,
-      category: visionOutput.category,
-    },
-    "Granite Vision identify call"
-  );
+  try {
+    visionOutput = JSON.parse(extracted) as GraniteVisionOutput;
+  } catch {
+    log?.warn(
+      { durationMs, rawContent: content.slice(0, 500) },
+      "Granite Vision JSON parse failed — extracted text was not valid JSON (parse failure, result not cached)"
+    );
+    return { match: null, parseFailure: true };
+  }
+
+  // ── Validate required fields ────────────────────────────────────────────
+  if (
+    typeof visionOutput.is_third_party !== "boolean" ||
+    typeof visionOutput.confidence !== "number" ||
+    typeof visionOutput.category !== "string" ||
+    !Array.isArray(visionOutput.signals) ||
+    typeof visionOutput.reasoning !== "string"
+  ) {
+    log?.warn(
+      { durationMs, rawContent: content.slice(0, 500) },
+      "Granite Vision schema validation failed — required fields missing or wrong type (parse failure, result not cached)"
+    );
+    return { match: null, parseFailure: true };
+  }
 
   if (!visionOutput.is_third_party || visionOutput.confidence < 40) {
+    // Confident clean negative — log at info so healthy runs are visible.
+    log?.info?.(
+      { durationMs, confidence: visionOutput.confidence, isThirdParty: false },
+      "Granite Vision: clean negative verdict"
+    );
     return { match: null };
   }
+
+  log?.info?.(
+    {
+      durationMs,
+      confidence: visionOutput.confidence,
+      category: visionOutput.category,
+      isThirdParty: true,
+    },
+    "Granite Vision: third-party match"
+  );
 
   // ── 5. Validate category against the closed taxonomy ───────────────────
   const rawCategory = typeof visionOutput.category === "string"

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect, useRef, useState } from "react";
 import type { StageDef } from "@/lib/stages";
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
@@ -10,9 +10,19 @@ export type CardStatus = "pending" | "running" | "done" | "failed";
 interface StageCardProps {
   def: StageDef;
   status: CardStatus;
-  /** 0–100 for stage 3 while running; undefined otherwise. */
-  percentage?: number;
-  /** Whether to show indeterminate bar (running, not stage 3). */
+  /**
+   * True while this card is the front card and should be animating.
+   * The card starts its own internal 0→100 % fill from the exact frame
+   * this prop first becomes true — completely local, no shared clock.
+   */
+  isActive?: boolean;
+  /**
+   * Real backend fraction (0–1) for this card's stage.  When provided the
+   * bar tracks it directly — no ceiling.  Falls back to the cosmetic ramp
+   * when zero or absent.
+   */
+  realFraction?: number;
+  /** Whether to show indeterminate bar (legacy, kept for API compat). */
   indeterminate?: boolean;
   /** The live status line from the scan service. */
   liveStatus?: string;
@@ -20,10 +30,140 @@ interface StageCardProps {
   failureMessage?: string;
   onRetry?: () => void;
   onContinue?: () => void;
+  /**
+   * Fired once when this card's local fill animation reaches 100 %.
+   * The wheel engine uses this to unblock the sweep for this card.
+   */
+  onFillComplete?: (cardIndex: number) => void;
   prefersReducedMotion?: boolean;
   /** Refs for focus-trap management in the scan overlay */
   retryBtnRef?: React.RefObject<HTMLButtonElement>;
   continueBtnRef?: React.RefObject<HTMLButtonElement>;
+}
+
+/* ─── Per-card animation hook ────────────────────────────────────────────── */
+
+const FILL_MIN_MS = 1100;
+
+/**
+ * Local fill animation: starts from 0 % the instant isActive flips true,
+ * advances toward max(cosmetic_ramp, realFraction), eases out near 100 %.
+ * The clock is local to this component instance — it never starts before
+ * isActive=true, regardless of when the component was mounted.
+ */
+function useLocalFill(
+  isActive: boolean,
+  cardIndex: number,
+  realFraction: number,
+  prefersReducedMotion: boolean,
+  onFillComplete: ((cardIndex: number) => void) | undefined,
+): number {
+  const [fill, setFill] = useState(0);
+
+  const rafRef    = useRef<number | null>(null);
+  const startRef  = useRef<number | null>(null);
+  // posRef holds the continuous animation position (0.0–1.0).
+  // fillRef holds the last integer (0–100) passed to setFill.
+  // They are SEPARATE so the lerp never reads back a quantised value.
+  const posRef    = useRef(0);
+  const fillRef   = useRef(0);
+  // Always-current ref so the rAF closure reads the latest real fraction
+  // without needing the effect to re-run.
+  const fracRef   = useRef(realFraction);
+  fracRef.current = realFraction;
+  const onFillCompleteRef  = useRef(onFillComplete);
+  onFillCompleteRef.current = onFillComplete;
+
+  useEffect(() => {
+    if (!isActive) {
+      // Card stepped down from active — cancel and reset so next activation
+      // always starts clean from 0.
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      startRef.current = null;
+      posRef.current   = 0;
+      fillRef.current  = 0;
+      setFill(0);
+      return;
+    }
+
+    // Reduced-motion: no tween, just snap to 100 immediately.
+    if (prefersReducedMotion) {
+      posRef.current  = 1;
+      fillRef.current = 100;
+      setFill(100);
+      onFillCompleteRef.current?.(cardIndex);
+      return;
+    }
+
+    // Guard: only start one loop per activation.
+    if (rafRef.current !== null) return;
+
+    function tick(now: number) {
+      // startRef is null on the very first frame — set it now.
+      // This means elapsed=0 on frame 1, so the bar starts at exactly 0 %,
+      // anchored to the real paint time, not to any earlier state-update.
+      if (startRef.current === null) startRef.current = now;
+      const elapsed = now - startRef.current;
+
+      // Cosmetic ramp: 0 → 1 over FILL_MIN_MS.
+      // Used as a FALLBACK only — when no real signal exists (fracRef = 0)
+      // it guarantees the bar fills visibly in bounded time.  It must not
+      // override a genuine progress value, because doing so would race the
+      // bar to full regardless of what the real work reports.
+      const cosmeticTarget = Math.min(elapsed / FILL_MIN_MS, 1);
+
+      // Target: real fraction when a genuine signal is present; cosmetic
+      // ramp when there is none.  A real signal is defined as fracRef > 0
+      // (stages that report no progress leave it at 0 the whole time).
+      const target = fracRef.current > 0 ? fracRef.current : cosmeticTarget;
+
+      // Ease-out lerp — operates on posRef (continuous float 0–1), NEVER on
+      // the rounded integer.  Rounding only happens when writing to the DOM.
+      const nextPos = posRef.current + (target - posRef.current) * 0.12;
+
+      // Done when the bar is visually within one display unit of the target.
+      // For card 3 the target grows continuously through both phases (0→0.5
+      // during audio, 0.5→1.0 during visual), so the lerp can never reach
+      // 0.995 until the target itself has reached 1.0.  For cards 0–2 the
+      // target is the cosmetic ramp which reaches 1.0 after FILL_MIN_MS.
+      // In both cases done fires in bounded time once the real work finishes.
+      const done = nextPos >= 0.995;
+      posRef.current = done ? 1 : nextPos;
+
+      const nextInt = done ? 100 : Math.round(posRef.current * 100);
+      if (nextInt !== fillRef.current) {
+        fillRef.current = nextInt;
+        setFill(nextInt);
+      }
+
+      if (!done) {
+        rafRef.current = requestAnimationFrame(tick);
+      } else {
+        rafRef.current = null;
+        // Notify the wheel engine that this card's fill animation is done.
+        // For card 3 the wheel additionally waits on visualScanning; this
+        // signal only unblocks Gate 2 — Gate 3 is the wheel's own concern.
+        onFillCompleteRef.current?.(cardIndex);
+      }
+    }
+
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  // Restart only when activation state or motion pref changes.
+  // realFraction is fed via ref so the loop stays alive without restarting.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, prefersReducedMotion]);
+
+  return fill;
 }
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -88,7 +228,9 @@ function statusWord(status: CardStatus): string {
 export function StageCard({
   def,
   status,
-  percentage,
+  isActive = false,
+  realFraction = 0,
+  onFillComplete,
   indeterminate,
   liveStatus,
   failureMessage,
@@ -101,15 +243,32 @@ export function StageCard({
   const { first, rest } = useMemo(() => splitLabel(def.label), [def.label]);
   const colors = useMemo(() => cardColors(status, def), [status, def]);
 
+  // Local fill animation — starts from 0 the moment this card becomes active.
+  const localFill = useLocalFill(
+    isActive,
+    def.index,
+    realFraction,
+    prefersReducedMotion ?? false,
+    onFillComplete,
+  );
+
+  // barPercent: single source of truth for both the percentage label and the
+  // bar width — they always read the same value so they can never mismatch.
+  //   • done    → 100 (card has been swept; bar is full)
+  //   • running → localFill (live animated value 0–100, shown regardless of
+  //               isActive so the label appears even on the first frame)
+  //   • pending → 0
   const barPercent =
     status === "done"
       ? 100
-      : status === "pending"
-      ? 0
-      : percentage ?? undefined;
+      : status === "running"
+      ? localFill
+      : 0;
 
   const showBar = status !== "failed";
-  const isIndeterminate = status === "running" && indeterminate && barPercent === undefined;
+  // isIndeterminate: legacy API compat — only fires if caller explicitly sets
+  // indeterminate=true while running and the bar hasn't started yet (0 %).
+  const isIndeterminate = status === "running" && !!indeterminate && localFill === 0;
 
   const accentColor = status === "failed" ? "#F4F1EA" : def.accent;
   const descriptionText =
@@ -319,7 +478,7 @@ export function StageCard({
                     ? "Waiting"
                     : "Working"}
                 </span>
-                {barPercent !== undefined && (
+                {status !== "pending" && (
                   <span
                     style={{
                       fontFamily:
@@ -345,9 +504,7 @@ export function StageCard({
                 role="progressbar"
                 aria-valuemin={0}
                 aria-valuemax={100}
-                {...(barPercent !== undefined
-                  ? { "aria-valuenow": barPercent }
-                  : {})}
+                aria-valuenow={barPercent}
               >
                 {status === "pending" ? (
                   <div
@@ -385,7 +542,6 @@ export function StageCard({
                       height: "100%",
                       background: accentColor,
                       opacity: 0.9,
-                      transition: "width 0.6s ease",
                     }}
                   />
                 )}

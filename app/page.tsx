@@ -67,6 +67,10 @@ function WorkspaceInner() {
   // Synchronous in-flight flag — set before the first await so the guard
   // is effective even when called twice in the same synchronous frame.
   const scanInFlightRef = useRef(false);
+  // Same pattern for the visual scan.  Without this guard two visual scans
+  // can overlap: the first completion clears visualScanning while the second
+  // is still running, leaving the flag stuck.
+  const visualScanInFlightRef = useRef(false);
 
   const scanTriggerRef = useRef<HTMLElement | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
@@ -169,13 +173,20 @@ function WorkspaceInner() {
           statusLine,
         }));
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Scan failed.";
-        setScanMeta((prev) => ({ ...prev, failureMessage: msg }));
-        setStateRaw((prev) => ({
-          ...prev,
-          scanning: false,
-          errorMessage: msg,
-        }));
+        // AbortError means the user dismissed the overlay (handleContinue
+        // called services.scan.cancel()).  This is not a failure — clear the
+        // scanning flag silently without putting anything on the failure card.
+        if (err instanceof Error && err.name === "AbortError") {
+          setStateRaw((prev) => ({ ...prev, scanning: false }));
+        } else {
+          const msg = err instanceof Error ? err.message : "Scan failed.";
+          setScanMeta((prev) => ({ ...prev, failureMessage: msg }));
+          setStateRaw((prev) => ({
+            ...prev,
+            scanning: false,
+            errorMessage: msg,
+          }));
+        }
       } finally {
         scanInFlightRef.current = false;
       }
@@ -188,6 +199,20 @@ function WorkspaceInner() {
     async (itemsOverride?: MediaItem[]) => {
       const items = itemsOverride ?? stateRef.current.items;
       if (items.length === 0) return;
+      // Guard: cancel any in-flight visual scan and wait for it to clear before
+      // starting a new one.  Without this, two overlapping scans race to write
+      // visualScanning, and the first completion can clear the flag while the
+      // second is still running — or leave it set with nothing running.
+      if (visualScanInFlightRef.current) {
+        services.visualScan.cancel();
+        // Give the in-flight scan one tick to process its AbortError and clear
+        // visualScanInFlightRef before we proceed.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        // If it's still running after the tick, bail — something else will
+        // clean up. (In practice this path is never hit in normal use.)
+        if (visualScanInFlightRef.current) return;
+      }
+      visualScanInFlightRef.current = true;
 
       setStateRaw((prev) => ({
         ...prev,
@@ -196,10 +221,17 @@ function WorkspaceInner() {
         visualScanStatus: "",
       }));
 
+      // Track whether the final progress callback reported frame failures so
+      // we can warn the user after the scan completes.
+      let lastFailedFrames = 0;
+
       try {
         const found = await services.visualScan.scan(
           { items },
           (progress) => {
+            if (progress.failedFrames !== undefined) {
+              lastFailedFrames = progress.failedFrames;
+            }
             setStateRaw((prev) => ({
               ...prev,
               visualScanProgress: Math.round(progress.fraction * 100),
@@ -215,13 +247,27 @@ function WorkspaceInner() {
           visualScanned: true,
           visualSpans: found,
         }));
+
+        // Warn only when more than one frame failed — a single transient blip
+        // on a long video does not undermine an otherwise sound result, but
+        // two or more failures suggest a systematic backend problem.
+        if (lastFailedFrames > 1) {
+          pushToast(
+            `Visual scan completed, but ${lastFailedFrames} frames could not be checked (server error). Results may be incomplete.`,
+            "err"
+          );
+        }
       } catch (err) {
-        // Visual scan failure is non-fatal — log and continue
-        console.error("[visual-scan] failed:", err);
+        // AbortError = user dismissed; clear flag silently without logging.
+        if (!(err instanceof Error && err.name === "AbortError")) {
+          console.error("[visual-scan] failed:", err);
+        }
         setStateRaw((prev) => ({ ...prev, visualScanning: false }));
+      } finally {
+        visualScanInFlightRef.current = false;
       }
     },
-    [services.visualScan]
+    [services.visualScan, pushToast]
   );
 
   /* ─── Manual scan ────────────────────────────────────────────────────── */
@@ -243,12 +289,21 @@ function WorkspaceInner() {
   }, [runScan]);
 
   const handleContinue = useCallback(() => {
+    // Cancel any in-flight scan work so it stops writing to state and releases
+    // scanInFlightRef.  Without this, the user cannot start a new scan until
+    // the abandoned scan settles on its own, which can take minutes.
+    // The AbortError each service throws is caught silently in runScan /
+    // runVisualScan — it is not treated as a failure and nothing appears on the
+    // failure card.
+    services.scan.cancel();
+    services.visualScan.cancel();
     setStateRaw((prev) => ({
       ...prev,
       scanOverlayOpen: false,
       scanning: false,
+      visualScanning: false,
     }));
-  }, []);
+  }, [services.scan, services.visualScan]);
 
   /* ─── Media ready (launch screen "Start") ────────────────────────────── */
   const handleMediaReady = useCallback(
@@ -828,11 +883,38 @@ function WorkspaceInner() {
       {state.scanOverlayOpen && (
         <ScanOverlay
           scanning={state.scanning}
+          visualScanning={state.visualScanning}
           scanFailed={!!scanMeta.failureMessage}
           failureMessage={scanMeta.failureMessage}
-          scanStage={state.scanStage}
-          scanFraction={state.scanProgress / 100}
-          scanStatus={state.scanStatus}
+          // scanStage: while audio runs use the real stage index (0–3).
+          // Once audio finishes hold at 3 so card 3 stays at the front while
+          // visual runs.  Advance to 4 only when both are done — that enqueues
+          // card 3 for sweep and allows the wheel to close.
+          scanStage={
+            state.scanning
+              ? state.scanStage          // audio in progress — use its stage
+              : state.visualScanning
+              ? 3                        // audio done, visual running — hold on card 3
+              : 4                        // both done — enqueue card 3, start close
+          }
+          // scanFraction: one continuous 0→1 value covering both phases.
+          // Audio work maps to 0→0.5; visual work maps to 0.5→1.0.
+          // The switch-point is exactly 0.5 in both directions so the bar
+          // never jumps backwards when the phase changes.
+          scanFraction={
+            state.scanning
+              ? (state.scanProgress / 100) * 0.5
+              : state.visualScanning
+              ? 0.5 + (state.visualScanProgress / 100) * 0.5
+              : 1
+          }
+          // scanStatus: audio status while audio runs, visual status after.
+          // Card 3's liveStatus line shows what is currently being examined.
+          scanStatus={
+            state.scanning
+              ? state.scanStatus
+              : state.visualScanStatus
+          }
           scanStartMs={scanMeta.startMs}
           primaryFileName={primaryItem?.name ?? ""}
           onRetry={handleRetry}

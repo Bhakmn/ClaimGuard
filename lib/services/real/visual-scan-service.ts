@@ -261,6 +261,9 @@ let activeScanController: AbortController | null = null;
 /* ─── Real scan service ──────────────────────────────────────────────────── */
 
 export const realVisualScanService: VisualScanService = {
+  cancel() {
+    activeScanController?.abort();
+  },
   async scan(
     request: VisualScanRequest,
     onProgress: (p: VisualScanProgress) => void
@@ -271,6 +274,8 @@ export const realVisualScanService: VisualScanService = {
     const signal = controller.signal;
 
     const found: FlaggedVisualSpan[] = [];
+    let framesFailed = 0;
+    let framesTotal  = 0;
     const emit = (fraction: number, status: string) => {
       if (signal.aborted) return;
       onProgress({ fraction, status, found: [...found] });
@@ -404,10 +409,14 @@ export const realVisualScanService: VisualScanService = {
                 return { timeSec, match: null, inherited: false };
               }
               try {
+                framesTotal++;
                 const match = await identifyFrame(blob, width, height, signal);
                 return { timeSec, match, inherited: false };
               } catch (err) {
                 if (err instanceof Error && err.name === "AbortError") throw err;
+                // Count backend errors so callers can surface a warning.
+                framesFailed++;
+                console.warn(`[visual-scan] frame at ${timeSec}s failed:`, err);
                 return { timeSec, match: null, inherited: false };
               }
             })
@@ -470,7 +479,12 @@ export const realVisualScanService: VisualScanService = {
       throw new DOMException("Visual scan cancelled", "AbortError");
     }
 
-    onProgress({ fraction: 1, status: "Visual scan complete.", found });
+    onProgress({
+      fraction: 1,
+      status: "Visual scan complete.",
+      found,
+      failedFrames: framesFailed,
+    });
     return found;
   },
 };

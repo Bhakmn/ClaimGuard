@@ -37,11 +37,11 @@ export const STAGES: StageDef[] = [
   },
   {
     index: 3,
-    label: "Scan Audio",
+    label: "Scan",
     cardBg: "#1F1F1F",
     cardText: "#F4F1EA",
     accent: "#FFC233",
     description:
-      "Fingerprinting the soundtrack and flagging copyrighted songs.",
+      "Fingerprinting the soundtrack and scanning video frames for copyrighted content.",
   },
 ];

@@ -100,8 +100,10 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const firstFitDoneRef = useRef(false);
-  // When true the user has manually panned/zoomed during playback — suppress
-  // playhead following until playback stops or they explicitly re-centre.
+  // When true the user has manually panned — suppress playhead following until
+  // an action that legitimately means "take me back to the playhead" clears it.
+  // Set by ANY manual scroll or zoom-scroll, regardless of playback state.
+  // Cleared by: play start, play stop, explicit seek, fit, re-centre.
   const userScrolledRef = useRef(false);
 
   const primaryItem = state.items[0] ?? null;
@@ -162,21 +164,37 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     fitBase();
   }, [fitBase]);
 
-  // Wrap onWheel so zooming during playback suppresses following.
+  // Wrap onWheel so any scroll/zoom gesture suppresses following, regardless
+  // of whether playback is running.  A manual pan is always intentional.
   const onWheel = useCallback((e: WheelEvent) => {
-    if (state.playing) userScrolledRef.current = true;
+    userScrolledRef.current = true;
     onWheelBase(e);
-  }, [state.playing, onWheelBase]);
+  }, [onWheelBase]);
+
+  // Wrap onSeek so any seek gesture (ruler click, arrow key, scrub) clears the
+  // flag — the user is asking to go to a specific time, so following should
+  // bring that into view.
+  const handleSeek = useCallback((t: number) => {
+    userScrolledRef.current = false;
+    onSeek(t);
+  }, [onSeek]);
 
   /* ── Playhead following ────────────────────────────────────────────────── */
-  // Clear the user-scrolled flag when playback stops so following resumes on
-  // the next play.
+  // Clear the user-scrolled flag on both play-start AND play-stop transitions.
+  //   • play-start: a user who panned while paused should be re-followed when
+  //     they hit play, not left staring at an empty stretch of timeline.
+  //   • play-stop: following resumes after the user finishes watching.
   const prevPlayingRef = useRef(false);
+  const playingRef = useRef(state.playing);
+  playingRef.current = state.playing;
   useEffect(() => {
-    if (prevPlayingRef.current && !state.playing) {
+    const wasPlaying = prevPlayingRef.current;
+    const isPlaying = state.playing;
+    if (wasPlaying !== isPlaying) {
+      // Any play/pause transition re-enables following.
       userScrolledRef.current = false;
     }
-    prevPlayingRef.current = state.playing;
+    prevPlayingRef.current = isPlaying;
   }, [state.playing]);
 
   // During playback the needle and scroll are driven imperatively via tickRef
@@ -198,17 +216,31 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
   const ppsRef = useRef(calcPixelsPerSecond(zoom));
   ppsRef.current = calcPixelsPerSecond(zoom);
 
+  // Last t value passed to the tick — skip needle + follow when unchanged.
+  // While paused the clock never advances, so this eliminates ~60 redundant
+  // DOM assertions per second and prevents any scroll snap-back while the
+  // user is panning.
+  const lastTickTRef = useRef<number | null>(null);
+
   useEffect(() => {
     if (!tickRef) return;
     (tickRef as React.MutableRefObject<TimelineTickHandle | null>).current = {
       tick(t: number) {
+        // Skip all work if the clock hasn't moved since the last frame.
+        // This is the common case while paused — the playback engine still
+        // runs its RAF loop (for video/audio sync), but the timeline needs
+        // to do nothing.
+        if (t === lastTickTRef.current) return;
+        lastTickTRef.current = t;
+
         // Move needle
         if (playheadElRef.current) {
           playheadElRef.current.style.left = `${t * ppsRef.current}px`;
         }
-        // Scroll to follow playhead
+        // Scroll to follow playhead — use the live playing state from the ref
+        // so paused framing (centre) vs playing framing (left-pin) is correct.
         if (!userScrolledRef.current) {
-          followPlayhead(t, true, viewportWidth);
+          followPlayhead(t, playingRef.current, viewportWidth);
         }
       },
     };
@@ -230,9 +262,10 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     const sl = scrollerRef.current?.scrollLeft ?? 0;
     setScrollLeft(sl);
     setTooltip(null);
-    // If the user scrolls manually during playback, stop following the playhead.
-    if (state.playing) userScrolledRef.current = true;
-  }, [state.playing]);
+    // Any manual scroll — whether playing or paused — is intentional.
+    // Set the flag unconditionally so the follow logic stays out of the way.
+    userScrolledRef.current = true;
+  }, []);
 
   /* ── Content rect ──────────────────────────────────────────────────────── */
   const [contentRect, setContentRect] = useState<DOMRect | null>(null);
@@ -406,9 +439,9 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
       setScrubbing(true);
       update({ selectedSpanId: null, selectedClip: null });
       const t = ptrTime(e.clientX);
-      onSeek(Math.max(0, Math.min(contentDuration, t)));
+      handleSeek(Math.max(0, Math.min(contentDuration, t)));
     },
-    [ptrTime, contentDuration, onSeek, update]
+    [ptrTime, contentDuration, handleSeek, update]
   );
 
   const handleRulerPointerMove = useCallback(
@@ -416,9 +449,9 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
       if (!scrubbing) return;
       edgeAutoScroll(e.clientX);
       const t = ptrTime(e.clientX);
-      onSeek(Math.max(0, Math.min(contentDuration, t)));
+      handleSeek(Math.max(0, Math.min(contentDuration, t)));
     },
-    [scrubbing, ptrTime, contentDuration, onSeek, edgeAutoScroll]
+    [scrubbing, ptrTime, contentDuration, handleSeek, edgeAutoScroll]
   );
 
   const handleRulerPointerUp = useCallback(() => {
@@ -433,9 +466,9 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
       setScrubbing(true);
       e.currentTarget.setPointerCapture(e.pointerId);
       const t = ptrTime(e.clientX);
-      onSeek(Math.max(0, Math.min(contentDuration, t)));
+      handleSeek(Math.max(0, Math.min(contentDuration, t)));
     },
-    [ptrTime, contentDuration, onSeek, update]
+    [ptrTime, contentDuration, handleSeek, update]
   );
 
   /* ── Tooltip hit-testing on audio track ────────────────────────────────── */
@@ -918,10 +951,10 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
             if (tag === "input" || tag === "select" || tag === "textarea") return;
             if (e.key === "ArrowLeft") {
               e.preventDefault();
-              onSeek(Math.max(0, state.playhead - (e.shiftKey ? 1 : 0.1)));
+              handleSeek(Math.max(0, state.playhead - (e.shiftKey ? 1 : 0.1)));
             } else if (e.key === "ArrowRight") {
               e.preventDefault();
-              onSeek(Math.min(timelineDuration, state.playhead + (e.shiftKey ? 1 : 0.1)));
+              handleSeek(Math.min(timelineDuration, state.playhead + (e.shiftKey ? 1 : 0.1)));
             }
           }}
         >
@@ -1001,7 +1034,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
             <div
               className="video-track"
               onPointerDown={handleTrackPointerDown}
-              onPointerMove={(e) => { if (scrubbing) { edgeAutoScroll(e.clientX); onSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); } }}
+              onPointerMove={(e) => { if (scrubbing) { edgeAutoScroll(e.clientX); handleSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); } }}
               onPointerUp={() => setScrubbing(false)}
             >
               {/* Filmstrip canvas — positioned at scrollLeft, sized to viewport only */}
@@ -1136,7 +1169,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
               className="audio-track"
               onPointerDown={handleTrackPointerDown}
               onPointerMove={(e) => {
-                if (scrubbing) { edgeAutoScroll(e.clientX); onSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); }
+                if (scrubbing) { edgeAutoScroll(e.clientX); handleSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); }
                 handleAudioTrackPointerMove(e);
               }}
               onPointerUp={() => setScrubbing(false)}
@@ -1411,7 +1444,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
               if (result) addRegionAt(result.sourceTime, state.audioSegments[result.index].mediaId);
             }}
             onSplitAtPlayhead={splitSpanAtPlayhead}
-            onSeekHere={() => onSeek(clickTime)}
+            onSeekHere={() => handleSeek(clickTime)}
             onClearAll={clearAllSpans}
           />
         );

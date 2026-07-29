@@ -7,6 +7,12 @@ export interface VisualScanProgress {
   fraction: number;
   status: string;
   found: FlaggedVisualSpan[];
+  /**
+   * Number of frames that failed with a non-cancellation error during this
+   * scan.  Undefined (or 0) means no failures.  Set on the final emission
+   * so callers can decide whether to surface a warning.
+   */
+  failedFrames?: number;
 }
 
 export interface VisualScanRequest {
@@ -18,6 +24,11 @@ export interface VisualScanService {
     request: VisualScanRequest,
     onProgress: (p: VisualScanProgress) => void
   ): Promise<FlaggedVisualSpan[]>;
+  /**
+   * Abort any in-flight scan immediately.  Safe to call when nothing is
+   * running.  The pending scan() promise will reject with an AbortError.
+   */
+  cancel(): void;
 }
 
 /* ─── Fixture flags ──────────────────────────────────────────────────────── */
@@ -73,6 +84,7 @@ function nextId(): string {
 /* ─── Mock implementation ────────────────────────────────────────────────── */
 
 export const mockVisualScanService: VisualScanService = {
+  cancel() { /* mock resolves quickly; no abort needed */ },
   async scan(request, onProgress) {
     const controls = getControls();
     const found: FlaggedVisualSpan[] = [];
