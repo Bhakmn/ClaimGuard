@@ -6,7 +6,6 @@ interface ActionRowProps {
   /* Scan */
   scanning: boolean;
   scanned: boolean;
-  scanProgress: number; // 0–100
   sourceDuration: number;
   /* Export */
   exporting: boolean;
@@ -26,7 +25,6 @@ interface ActionRowProps {
 export function ActionRow({
   scanning,
   scanned,
-  scanProgress,
   sourceDuration,
   exporting,
   queueLength,
@@ -191,22 +189,6 @@ export function ActionRow({
         </button>
       </div>
 
-      {/* Scan inline progress — shown only during scanning */}
-      {scanning && (
-        <div
-          className="scan-inline-bar-track"
-          role="progressbar"
-          aria-label="Scan progress"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={scanProgress}
-        >
-          <div
-            className="scan-inline-bar-fill"
-            style={{ width: `${scanProgress}%` }}
-          />
-        </div>
-      )}
     </div>
   );
 }

@@ -246,7 +246,6 @@ export function WorkspacePanel({
       <ActionRow
         scanning={state.scanning}
         scanned={state.scanned}
-        scanProgress={state.scanProgress}
         sourceDuration={primaryItem?.duration ?? 0}
         exporting={state.exporting}
         queueLength={state.queue.length}

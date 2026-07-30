@@ -40,7 +40,7 @@ import { useFilmstripCanvas } from "@/hooks/useFilmstripCanvas";
 import { useWaveformCanvas } from "@/hooks/useWaveformCanvas";
 import { useDragEngine } from "@/hooks/useDragEngine";
 import { useZoomEngine } from "@/hooks/useZoomEngine";
-import { RegionTooltip, type TooltipData } from "./RegionTooltip";
+import { RegionTooltip, type TooltipData, VisualRegionTooltip, type VisualTooltipData } from "./RegionTooltip";
 import {
   RegionContextMenu,
   ClipContextMenu,
@@ -97,6 +97,7 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [snapTime, setSnapTime] = useState<number | null>(null);
   const [tooltip, setTooltip] = useState<TooltipData | null>(null);
+  const [visualTooltip, setVisualTooltip] = useState<VisualTooltipData | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const firstFitDoneRef = useRef(false);
@@ -262,21 +263,29 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     const sl = scrollerRef.current?.scrollLeft ?? 0;
     setScrollLeft(sl);
     setTooltip(null);
+    setVisualTooltip(null);
     // Any manual scroll — whether playing or paused — is intentional.
     // Set the flag unconditionally so the follow logic stays out of the way.
     userScrolledRef.current = true;
   }, []);
 
   /* ── Content rect ──────────────────────────────────────────────────────── */
+  // Only the scroller's left edge is needed by ptrTime — it never moves during
+  // a horizontal scroll (only during layout/resize), so we observe the scroller,
+  // not the content div.  Using the content div's BoundingClientRect was wrong:
+  // after a zoom-while-scrolled the content div's left shifts by -scrollLeft,
+  // causing ptrTime to double-count the scroll offset.
   const [contentRect, setContentRect] = useState<DOMRect | null>(null);
   useEffect(() => {
-    const content = contentRef.current;
-    if (!content) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
     const ro = new ResizeObserver(() => {
-      setContentRect(content.getBoundingClientRect());
+      setContentRect(scroller.getBoundingClientRect());
     });
-    ro.observe(content);
+    ro.observe(scroller);
     return () => ro.disconnect();
+  // scrollerRef is a stable ref object — safe to omit from deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ── Canvas hooks ──────────────────────────────────────────────────────── */
@@ -482,6 +491,31 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
       handleSeek(Math.max(0, Math.min(contentDuration, t)));
     },
     [ptrTime, contentDuration, handleSeek, update]
+  );
+
+  /* ── Tooltip hit-testing on video track ────────────────────────────────── */
+  const handleVideoTrackPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (scrubbing || dragRef.current) { setVisualTooltip(null); return; }
+      const t = ptrTime(e.clientX);
+      const pxT = t * pps;
+      const hit = visualBlocks.find(
+        (b) => pxT >= b.left && pxT <= b.left + b.width
+      );
+      if (!hit) { setVisualTooltip(null); return; }
+      const rect = scrollerRef.current?.getBoundingClientRect();
+      const videoTop = rect ? rect.top + RULER_HEIGHT : e.clientY;
+      setVisualTooltip({
+        span: hit.span,
+        blockLeft: hit.left - scrollLeft,
+        blockWidth: hit.width,
+        clientX: e.clientX,
+        videoTrackTop: videoTop,
+        pixelsPerSecond: pps,
+        scrollLeft,
+      });
+    },
+    [scrubbing, dragRef, ptrTime, pps, visualBlocks, scrollLeft]
   );
 
   /* ── Tooltip hit-testing on audio track ────────────────────────────────── */
@@ -1047,13 +1081,17 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
             <div
               className="video-track"
               onPointerDown={handleTrackPointerDown}
-              onPointerMove={(e) => { if (scrubbing) { edgeAutoScroll(e.clientX); handleSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); } }}
+              onPointerMove={(e) => {
+                if (scrubbing) { edgeAutoScroll(e.clientX); handleSeek(Math.max(0, Math.min(contentDuration, ptrTime(e.clientX)))); }
+                handleVideoTrackPointerMove(e);
+              }}
               onPointerUp={() => setScrubbing(false)}
+              onPointerLeave={() => setVisualTooltip(null)}
             >
-              {/* Filmstrip canvas — positioned at scrollLeft, sized to viewport only */}
+              {/* Filmstrip canvas — starts at 17px (below the label row), sized to viewport only */}
               <canvas
                 ref={filmRef}
-                style={{ position: "absolute", top: 0, left: scrollLeft, pointerEvents: "none" }}
+                style={{ position: "absolute", top: 17, left: scrollLeft, pointerEvents: "none" }}
               />
 
               {/* Video clips */}
@@ -1126,20 +1164,14 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                 return (
                   <div
                     key={span.id}
+                    className={`visual-flag-region${spared ? " visual-flag-region--spared" : ""}`}
                     style={{
-                      position: "absolute",
-                      top: 0,
                       left,
                       width,
-                      height: "100%",
                       background: spared
                         ? "rgba(124,92,216,0.12)"
                         : "rgba(124,92,216,0.28)",
-                      borderLeft: spared ? "2px solid rgba(124,92,216,0.35)" : "2px solid #7c5cd8",
-                      borderRight: spared ? "2px solid rgba(124,92,216,0.35)" : "2px solid #7c5cd8",
-                      boxSizing: "border-box",
                       zIndex: 4,
-                      pointerEvents: "none",
                     }}
                   >
                     {/* Clickable label badge — toggle spare/active without
@@ -1186,6 +1218,10 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                         ◈ {spared ? "spared" : VISUAL_CATEGORY_LABELS[span.label] ?? span.label}
                       </span>
                     </div>
+                    {/* Start tick — decorative vertical cap, mirrors .region-edge-handle::after */}
+                    <div className="visual-edge-tick visual-edge-tick--left" />
+                    {/* End tick */}
+                    <div className="visual-edge-tick visual-edge-tick--right" />
                   </div>
                 );
               })}
@@ -1383,6 +1419,9 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
       {/* ── Tooltip ────────────────────────────────────────────────────────── */}
       {tooltip && !contextMenu && (
         <RegionTooltip data={tooltip} />
+      )}
+      {visualTooltip && !contextMenu && (
+        <VisualRegionTooltip data={visualTooltip} />
       )}
 
       {/* ── Context menus ──────────────────────────────────────────────────── */}

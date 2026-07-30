@@ -94,7 +94,8 @@ export function useZoomEngine({
         e.preventDefault();
         const scroller = scrollerRef.current;
         if (scroller) {
-          const newScroll = Math.max(0, scroller.scrollLeft + e.deltaY);
+          const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+          const newScroll = Math.max(0, Math.min(maxScroll, scroller.scrollLeft + e.deltaY));
           scroller.scrollLeft = newScroll;
           onScrollChange(newScroll);
         }

@@ -1116,7 +1116,7 @@ html, body {
   border-bottom: 1px solid #D1D1C9;
 }
 .timeline-header-row {
-  height: 56px;
+  height: 73px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1175,7 +1175,7 @@ html, body {
 /* Content */
 .timeline-content {
   position: relative;
-  height: 155px;
+  height: 172px;
 }
 
 /* Ruler */
@@ -1200,15 +1200,16 @@ html, body {
   cursor: crosshair;
   touch-action: none;
 }
+/* Video track: 17px label row + 56px filmstrip row = 73px total */
 .video-track {
   top: 26px;
-  height: 56px;
+  height: 73px;
   background: rgba(31,31,31,0.045);
   border-bottom: 1px solid #D1D1C9;
 }
 /* Audio track: 17px label row + 56px waveform row = 73px total */
 .audio-track {
-  top: 82px;
+  top: 99px;
   height: 73px;
   background: rgba(43,122,75,0.045);
 }
@@ -1412,6 +1413,48 @@ html, body {
 }
 .region-edge-handle--spared::after {
   background: #6F6A5F;
+}
+
+/* Visual flag regions — children of .video-track.
+   Border rules are a direct copy of .flag-region / .flag-region--spared
+   with only the color swapped from orange (#C65D3B) to purple (#7c5cd8). */
+.visual-flag-region {
+  position: absolute;
+  top: 3px;
+  bottom: 2px;
+  border: 1px solid #7c5cd8;
+  border-radius: 5px;
+  overflow: visible;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+.visual-flag-region--spared {
+  border-color: rgba(124,92,216,0.35);
+}
+/* Visual edge tick marks — purely decorative, match .region-edge-handle::after
+   with only the color changed from orange (#C65D3B) to purple (#7c5cd8). */
+.visual-edge-tick {
+  position: absolute;
+  top: 18px; /* skip the 16px label badge (top:2) so centering matches below it */
+  bottom: 0;
+  width: 10px;
+  pointer-events: none;
+  z-index: 5;
+}
+.visual-edge-tick--left  { left: -2px; }
+.visual-edge-tick--right { right: -2px; }
+.visual-edge-tick::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: #7c5cd8;
+}
+.visual-flag-region--spared .visual-edge-tick::after {
+  background: rgba(124,92,216,0.35);
 }
 
 /* Playhead */

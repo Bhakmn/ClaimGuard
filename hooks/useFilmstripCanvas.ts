@@ -75,7 +75,8 @@ export function useFilmstripCanvas({
       const vpStart = pxStart - scrollLeft;
       const vpEnd = pxEnd - scrollLeft;
 
-      // Clip to the segment boundary (1 px inset)
+      // Clip to the segment boundary (1 px inset), starting below the 17px label row.
+      // The canvas itself is offset by top:17px in JSX, so local y=0 = just below label.
       ctx.save();
       ctx.beginPath();
       if (ctx.roundRect) {
@@ -123,7 +124,7 @@ export function useFilmstripCanvas({
           }
 
           if (nearest) {
-            // Draw at viewport-relative x position
+            // Draw at viewport-relative x; y=0 is already below the label row
             ctx.drawImage(
               nearest.bitmap,
               tilePxStart - scrollLeft,

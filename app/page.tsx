@@ -109,7 +109,8 @@ function WorkspaceInner() {
   const runScan = useCallback(
     async (
       mode: "replace" | "append",
-      itemsOverride?: MediaItem[]
+      itemsOverride?: MediaItem[],
+      openOverlay?: boolean
     ) => {
       const items = itemsOverride ?? stateRef.current.items;
       if (items.length === 0) return;
@@ -117,7 +118,7 @@ function WorkspaceInner() {
       // concurrent call even within the same render cycle.
       if (scanInFlightRef.current) return;
       scanInFlightRef.current = true;
-      const openOverlay = mode === "replace";
+      const shouldOpenOverlay = openOverlay ?? (mode === "replace");
 
       setScanMeta({ startMs: Date.now(), failureMessage: null });
       setStateRaw((prev) => ({
@@ -127,7 +128,7 @@ function WorkspaceInner() {
         scanProgress: 0,
         scanStage: 0,
         scanStatus: "",
-        scanOverlayOpen: openOverlay,
+        scanOverlayOpen: shouldOpenOverlay,
         errorMessage: null,
         ...(mode === "replace" && prev.spans.length > 0
           ? pushUndo(prev, takeSnapshot(prev))
@@ -169,7 +170,15 @@ function WorkspaceInner() {
           ...prev,
           scanning: false,
           scanned: true,
-          spans: found,
+          spans:
+            mode === "replace"
+              ? found
+              : [
+                  ...prev.spans.filter(
+                    (s) => !found.find((f) => f.id === s.id)
+                  ),
+                  ...found,
+                ],
           statusLine,
         }));
       } catch (err) {
@@ -196,7 +205,7 @@ function WorkspaceInner() {
 
   /* ─── Visual scan orchestration ──────────────────────────────────────── */
   const runVisualScan = useCallback(
-    async (itemsOverride?: MediaItem[]) => {
+    async (itemsOverride?: MediaItem[], mode: "replace" | "append" = "replace") => {
       const items = itemsOverride ?? stateRef.current.items;
       if (items.length === 0) return;
       // Guard: cancel any in-flight visual scan and wait for it to clear before
@@ -236,7 +245,15 @@ function WorkspaceInner() {
               ...prev,
               visualScanProgress: Math.round(progress.fraction * 100),
               visualScanStatus: progress.status,
-              visualSpans: progress.found,
+              visualSpans:
+                mode === "replace"
+                  ? progress.found
+                  : [
+                      ...prev.visualSpans.filter(
+                        (s) => !progress.found.find((f) => f.id === s.id)
+                      ),
+                      ...progress.found,
+                    ],
             }));
           }
         );
@@ -245,7 +262,15 @@ function WorkspaceInner() {
           ...prev,
           visualScanning: false,
           visualScanned: true,
-          visualSpans: found,
+          visualSpans:
+            mode === "replace"
+              ? found
+              : [
+                  ...prev.visualSpans.filter(
+                    (s) => !found.find((f) => f.id === s.id)
+                  ),
+                  ...found,
+                ],
         }));
 
         // Warn only when more than one frame failed — a single transient blip
@@ -492,31 +517,33 @@ function WorkspaceInner() {
         audioSegments: [...prev.audioSegments, audioSeg],
       }));
 
-      // Append scan (no overlay)
-      const newItems = [...stateRef.current.items, item];
-      const found = await runScan("append", [item]).then(
-        () => {
-          // status line written inside runScan — build import-specific one
-          const spans = stateRef.current.spans.filter(
-            (s) => s.mediaId === item.id
-          );
-          const n = spans.length;
-          const dropPos = formatClock(currentEnd);
-          const statusLine =
-            n === 0
-              ? `Added ${item.name} at ${dropPos} — drag its ${kind === "video" ? "clips" : "clip"} anywhere.`
-              : n === 1
-              ? `Added ${item.name} at ${dropPos} — 1 copyrighted section flagged on it.`
-              : `Added ${item.name} at ${dropPos} — ${n} copyrighted sections flagged on it.`;
-          setStateRaw((prev) => ({ ...prev, statusLine }));
-        }
-      );
+      // Append scan — show the same overlay used for the initial scan, then
+      // automatically run the visual scan (same as handleMediaReady does).
+      await runScan("append", [item], /* openOverlay */ true).then(() => {
+        // status line written inside runScan — build import-specific one
+        const spans = stateRef.current.spans.filter(
+          (s) => s.mediaId === item.id
+        );
+        const n = spans.length;
+        const dropPos = formatClock(currentEnd);
+        const statusLine =
+          n === 0
+            ? `Added ${item.name} at ${dropPos} — drag its ${kind === "video" ? "clips" : "clip"} anywhere.`
+            : n === 1
+            ? `Added ${item.name} at ${dropPos} — 1 copyrighted section flagged on it.`
+            : `Added ${item.name} at ${dropPos} — ${n} copyrighted sections flagged on it.`;
+        setStateRaw((prev) => ({ ...prev, statusLine }));
+      });
+      // Auto-run visual scan on the newly added item — append mode preserves
+      // visual flags already on the timeline from previously scanned clips.
+      runVisualScan([item], "append");
     },
     [
       primaryItem,
       state.scanning,
       services.media,
       runScan,
+      runVisualScan,
       pushToast,
     ]
   );

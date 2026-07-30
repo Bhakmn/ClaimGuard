@@ -1,5 +1,5 @@
 import type { MediaItem, WaveformData, ThumbnailStrip } from "../types";
-import { delay, getControls } from "./delay";
+import { getControls } from "./delay";
 
 export interface MediaService {
   probe(
@@ -11,32 +11,6 @@ export interface MediaService {
 
   buildThumbnails(item: MediaItem): Promise<ThumbnailStrip | null>;
 }
-
-/* ─── Pseudo-random helper seeded from file name + size ─────────────────── */
-
-function makePrng(seed: number): () => number {
-  let s = seed >>> 0;
-  return function () {
-    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
-    return s / 0xffffffff;
-  };
-}
-
-function seedFromItem(item: MediaItem): number {
-  let h = item.file.size;
-  for (let i = 0; i < item.name.length; i++) {
-    h = (Math.imul(31, h) + item.name.charCodeAt(i)) >>> 0;
-  }
-  return h;
-}
-
-/* ─── Flag window fractions (mirrored from ScanService fixture data) ─────── */
-
-const FLAG_WINDOWS = [
-  { from: 0.08, to: 0.27 },
-  { from: 0.41, to: 0.55 },
-  { from: 0.78, to: 0.93 },
-];
 
 /* ─── Thumbnail build — one concurrent build per item ID ────────────────── */
 
@@ -94,59 +68,61 @@ export const mockMediaService: MediaService = {
     if (controls.stallMedia) return new Promise(() => undefined);
     if (controls.offline) return null;
 
-    await delay(900);
-
-    const RATE = 8000;
-    const sampleCount = Math.ceil(item.duration * RATE);
-    const peaks = new Float32Array(sampleCount);
-    const rand = makePrng(seedFromItem(item));
-
-    const breathTimes = [
-      item.duration * 0.25,
-      item.duration * 0.5,
-      item.duration * 0.75,
-    ];
-    const BREATH_HALF = 0.2;
-
-    for (let i = 0; i < sampleCount; i++) {
-      const t = i / RATE;
-      const noise = rand();
-
-      const inBreath = breathTimes.some(
-        (bt) => Math.abs(t - bt) <= BREATH_HALF
-      );
-      if (inBreath) {
-        peaks[i] = 0.05;
-        continue;
+    // Decode the actual audio via Web Audio API so the waveform reflects real
+    // amplitude instead of synthetic noise.
+    const RATE = 8000; // effective peaks-per-second stored in WaveformData
+    try {
+      const arrayBuf = await item.file.arrayBuffer();
+      const audioCtx = new OfflineAudioContext(1, 1, RATE);
+      let audioBuf: AudioBuffer;
+      try {
+        audioBuf = await audioCtx.decodeAudioData(arrayBuf);
+      } catch {
+        // Codec unsupported by the browser — fall back to silence rather than crash
+        return null;
       }
 
-      const wIdx = FLAG_WINDOWS.findIndex((w) => {
-        const f = t / item.duration;
-        return f >= w.from && f <= w.to;
-      });
+      // Down-mix to mono by averaging all channels, then resample to RATE peaks/s.
+      const srcRate   = audioBuf.sampleRate;
+      const srcLen    = audioBuf.length;
+      const channels  = audioBuf.numberOfChannels;
 
-      if (wIdx >= 0) {
-        const w = FLAG_WINDOWS[wIdx];
-        const wStart = w.from * item.duration;
-        const wEnd = w.to * item.duration;
-        const RAMP = 0.35;
-        let scale = 1;
-        if (t < wStart + RAMP) scale = (t - wStart) / RAMP;
-        else if (t > wEnd - RAMP) scale = (wEnd - t) / RAMP;
-        scale = Math.max(0, Math.min(1, scale));
-        peaks[i] = (0.55 + noise * 0.4) * scale + (0.08 + noise * 0.12) * (1 - scale);
-      } else {
-        peaks[i] = 0.08 + noise * 0.12;
+      // Build a mono Float32 view (sum of channels, divide by count)
+      // We avoid allocating a full-size copy when possible by using the first
+      // channel as a base and accumulating.
+      const mono = audioBuf.getChannelData(0).slice();   // copy ch0
+      for (let c = 1; c < channels; c++) {
+        const ch = audioBuf.getChannelData(c);
+        for (let n = 0; n < mono.length; n++) mono[n] += ch[n];
       }
-    }
+      if (channels > 1) {
+        for (let n = 0; n < mono.length; n++) mono[n] /= channels;
+      }
 
-    let globalMax = 0;
-    for (let i = 0; i < sampleCount; i++) {
-      if (peaks[i] > globalMax) globalMax = peaks[i];
-    }
-    if (globalMax < 0.0001) globalMax = 0.0001;
+      // Sample peak amplitude in windows of srcRate/RATE source samples each,
+      // producing exactly ceil(duration * RATE) output values.
+      const sampleCount = Math.ceil(audioBuf.duration * RATE);
+      const peaks       = new Float32Array(sampleCount);
+      const windowSize  = srcRate / RATE;   // source samples per output sample
 
-    return { peaks, sampleRate: RATE, globalMax };
+      let globalMax = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const s0 = Math.floor(i * windowSize);
+        const s1 = Math.min(srcLen - 1, Math.floor((i + 1) * windowSize));
+        let peak = 0;
+        for (let s = s0; s <= s1; s++) {
+          const abs = Math.abs(mono[s]);
+          if (abs > peak) peak = abs;
+        }
+        peaks[i] = peak;
+        if (peak > globalMax) globalMax = peak;
+      }
+      if (globalMax < 0.0001) globalMax = 0.0001;
+
+      return { peaks, sampleRate: RATE, globalMax };
+    } catch {
+      return null;
+    }
   },
 
   async buildThumbnails(item) {
