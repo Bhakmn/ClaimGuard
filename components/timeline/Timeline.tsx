@@ -408,12 +408,15 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
     span: FlaggedVisualSpan;
     left: number;
     width: number;
-    first: boolean;
   }
 
   const visualBlocks = useMemo<VisualBlock[]>(() => {
-    const blocks: VisualBlock[] = [];
+    // Merge all per-segment pixel intervals for each span into one contiguous
+    // block so a span crossing many small video segments renders as a single
+    // filled overlay rather than a forest of thin bordered rectangles.
     const sortedSegs = sortSegments(state.videoSegments);
+    const spanPixels = new Map<string, { span: FlaggedVisualSpan; minLeft: number; maxRight: number }>();
+
     for (const seg of sortedSegs) {
       const spansForSeg = state.visualSpans.filter(
         (sp) => sp.mediaId === seg.mediaId
@@ -422,13 +425,23 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
         const s = Math.max(span.start, seg.srcStart);
         const e = Math.min(span.end, seg.srcEnd);
         if (e - s < 0.01) continue;
-        const left = (seg.timelineStart + (s - seg.srcStart)) * pps;
-        const width = Math.max(4, (e - s) * pps);
-        const first = !blocks.find((b) => b.span.id === span.id);
-        blocks.push({ span, left, width, first });
+        const left  = (seg.timelineStart + (s - seg.srcStart)) * pps;
+        const right = left + Math.max(4, (e - s) * pps);
+        const entry = spanPixels.get(span.id);
+        if (!entry) {
+          spanPixels.set(span.id, { span, minLeft: left, maxRight: right });
+        } else {
+          entry.minLeft  = Math.min(entry.minLeft,  left);
+          entry.maxRight = Math.max(entry.maxRight, right);
+        }
       }
     }
-    return blocks;
+
+    return Array.from(spanPixels.values()).map(({ span, minLeft, maxRight }) => ({
+      span,
+      left:  minLeft,
+      width: Math.max(4, maxRight - minLeft),
+    }));
   }, [state.visualSpans, state.videoSegments, pps]);
 
   /* ── Scrubbing ─────────────────────────────────────────────────────────── */
@@ -1103,13 +1116,16 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                   </div>
                 );
               })}
-              {/* Visual flag overlays — sit on top of video clips */}
-              {visualBlocks.map((block, i) => {
-                const { span, left, width, first } = block;
+              {/* Visual flag overlays — sit on top of video clips.
+                  pointer-events:none on the outer shell so the video clip's
+                  drag and trim-handle events are not blocked; only the label
+                  badge inside gets pointer-events:auto for the toggle click. */}
+              {visualBlocks.map((block) => {
+                const { span, left, width } = block;
                 const spared = !span.enabled;
                 return (
                   <div
-                    key={`${span.id}-${i}`}
+                    key={span.id}
                     style={{
                       position: "absolute",
                       top: 0,
@@ -1123,42 +1139,53 @@ export function Timeline({ state, update, onSeek, onOpenImport, tickRef }: Timel
                       borderRight: spared ? "2px solid rgba(124,92,216,0.35)" : "2px solid #7c5cd8",
                       boxSizing: "border-box",
                       zIndex: 4,
-                      pointerEvents: "auto",
-                      cursor: "pointer",
-                    }}
-                    title={`${VISUAL_CATEGORY_LABELS[span.label] ?? span.label}${span.signals.length ? ` · ${span.signals[0]}` : ""}${spared ? " (spared)" : ""}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const snap = takeSnapshot(state);
-                      update({
-                        ...pushUndo(state, snap),
-                        visualSpans: state.visualSpans.map((s) =>
-                          s.id === span.id ? { ...s, enabled: !s.enabled } : s
-                        ),
-                      });
+                      pointerEvents: "none",
                     }}
                   >
-                    {first && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: "100%",
-                          left: 0,
-                          whiteSpace: "nowrap",
-                          maxWidth: width > 0 ? width : undefined,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          fontSize: 9.5,
-                          fontWeight: 600,
-                          color: "#7c5cd8",
-                          lineHeight: "14px",
-                          pointerEvents: "none",
-                          padding: "0 2px",
-                        }}
-                      >
-                        ◈ {VISUAL_CATEGORY_LABELS[span.label] ?? span.label}
-                      </div>
-                    )}
+                    {/* Clickable label badge — toggle spare/active without
+                        blocking the underlying clip's drag/trim events */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        left: 2,
+                        right: 2,
+                        height: 16,
+                        background: spared ? "rgba(124,92,216,0.5)" : "rgba(124,92,216,0.85)",
+                        borderRadius: 3,
+                        display: "flex",
+                        alignItems: "center",
+                        paddingLeft: 4,
+                        overflow: "hidden",
+                        pointerEvents: "auto",
+                        cursor: "pointer",
+                        zIndex: 5,
+                      }}
+                      title={`${VISUAL_CATEGORY_LABELS[span.label] ?? span.label}${span.signals.length ? ` · ${span.signals[0]}` : ""}${spared ? " (spared — click to restore)" : " (click to spare)"}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const snap = takeSnapshot(state);
+                        update({
+                          ...pushUndo(state, snap),
+                          visualSpans: state.visualSpans.map((s) =>
+                            s.id === span.id ? { ...s, enabled: !s.enabled } : s
+                          ),
+                        });
+                      }}
+                    >
+                      <span style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        color: "#fff",
+                        fontFamily: 'var(--font-courier),"Courier Prime",monospace',
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        pointerEvents: "none",
+                      }}>
+                        ◈ {spared ? "spared" : VISUAL_CATEGORY_LABELS[span.label] ?? span.label}
+                      </span>
+                    </div>
                   </div>
                 );
               })}
