@@ -189,8 +189,7 @@ which IBM models were rejected and why, is in
 
 Bob was the core development tool across all three machines the team built on. The
 evidence is not a vibe; it is exported verbatim from each machine's `bob.db`:
-**13 Bob tasks with full transcripts, ~1,900 messages, roughly 83 million input tokens
-and $209 of model compute over four days (27 to 30 July).**
+**13 Bob tasks with full transcripts, ~1,900 messages, roughly 83 million input tokens.**
 
 <!-- TEAM: put the exported bob-task JSON files into docs/bob-logs/ so the link below works. -->
 The raw task exports (one JSON per task, no summarisation, no fields dropped) are in
