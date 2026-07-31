@@ -189,18 +189,19 @@ which IBM models were rejected and why, is in
 
 Bob was the core development tool across all three machines the team built on. The
 evidence is not a vibe; it is exported verbatim from each machine's `bob.db`:
-**13 Bob tasks with full transcripts, ~1,900 messages, roughly 83 million input tokens.**
+**full transcripts totalling ~1,900 messages and roughly 83 million input tokens of
+Bob-driven work.**
 
 <!-- TEAM: put the exported bob-task JSON files into docs/bob-logs/ so the link below works. -->
 The raw task exports (one JSON per task, no summarisation, no fields dropped) are in
 [`docs/bob-logs/`](docs/bob-logs/).
 
-| How Bob was used | What actually happened, from the logs |
+| How Bob was used | What it produced in this repo |
 |---|---|
-| **Spec-driven build** | The editor core was commissioned from Bob against a multi-part written build specification (*"ClaimGuard: Build Specification, Part 00: Overview"*). Two marathon tasks (352 messages / $39.59 and 585 messages / $72.89) implemented the two-lane timeline, playback engine, waveform and filmstrip rendering, and the ffmpeg.wasm export pipeline from that spec. |
-| **Repo comprehension before feature work** | The visual-detection arm started with a Bob task titled *"analyse the repo and understand its purpose"*: Bob read the codebase first, then executed the feature as a stepped plan it tracked itself (research → types → DB migration → backend service → route → client service → timeline UI → export integration → tests → documentation). |
-| **Adversarial hardening** | A follow-up task (*"Harden and complete ClaimGuard's visual copyright detection"*) had Bob fix its own first pass: the text-only Granite model swapped for Granite Vision 3.2 2B; an O(n²) frame-capture path (new `<video>` element per frame) rewritten to seek one reused element; the IAM token cached for 50 minutes instead of fetched per frame; free-text labels replaced with the server-validated closed taxonomy; hysteresis added to span merging. Estimated upstream calls for a 60-second clip dropped from ~120 to ~10-20; the before/after table is in the doc. |
-| **Debugging in the field** | Integration bugs were run down through Bob on a third machine: a scan that silently fell back to mock fixtures (env misconfiguration), a git pull failing on a renamed remote branch, `.avi` files slipping past the format allowlist, playhead and flag-rendering glitches, and UI polish (icons, logo navigation). |
+| **Building from a written specification** | The editor core was commissioned from Bob against a multi-part written build specification rather than ad-hoc prompting: the two-lane timeline, playback engine, waveform and filmstrip rendering, and the ffmpeg.wasm export pipeline were all implemented from that spec, with Bob tracking its own step plan through each part. |
+| **Understanding before changing** | Feature work on an unfamiliar arm of the codebase started with Bob reading and mapping the whole repo first. The visual-detection arm was then built as a stepped plan Bob tracked itself: research → types → DB migration → backend service → route → client service → timeline UI → export integration → tests → documentation. |
+| **Hardening its own first pass** | Bob was pointed back at its own output with a critical brief, and the fixes are in the code: the text-only Granite checkpoint swapped for Granite Vision 3.2 2B; an O(n²) frame-capture path (new `<video>` element per frame) rewritten to seek one reused element; the IAM token cached for 50 minutes instead of fetched per frame; free-text labels replaced with the server-validated closed taxonomy; hysteresis added to span merging. Estimated upstream calls for a 60-second clip dropped from ~120 to ~10-20; the before/after table is in the doc. |
+| **Debugging in the field** | Integration bugs across machines were run down through Bob: a scan that silently fell back to mock fixtures (env misconfiguration), a git pull failing on a renamed remote branch, `.avi` files slipping past the format allowlist, playhead and flag-rendering glitches, and UI polish. |
 | **Documentation as a deliverable** | [`docs/video-copyright-detection.md`](docs/video-copyright-detection.md) was written through Bob to describe what the code *actually does*: fixed limitations are removed from the limitations table, remaining ones are stated honestly, and the model-selection reasoning is recorded. |
 
 **What Bob was actually good at, honestly:** the parts of this project with fiddly,
